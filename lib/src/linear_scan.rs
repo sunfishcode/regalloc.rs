@@ -531,7 +531,7 @@ fn try_allocate_reg<F: Function>(
       return false;
     }
 
-    let new_int = split(state, id, Split::At(split_pos));
+    let new_int = split(state, id, split_pos);
     state.insert_unhandled(new_int);
   }
 
@@ -710,7 +710,7 @@ fn allocate_blocked_reg<F: Function>(
 
   if first_use > next_use_pos[best_reg] {
     debug!("spill current interval");
-    let new_int = split(state, cur_id, Split::At(first_use));
+    let new_int = split(state, cur_id, first_use);
     state.insert_unhandled(new_int);
     state.spill(cur_id);
   } else {
@@ -813,13 +813,6 @@ fn allocate_blocked_reg<F: Function>(
   }
 
   Ok(())
-}
-
-#[derive(Debug)]
-enum Split {
-  At(InstPoint),
-  /// Split in [left, right].
-  Between(InstPoint, InstPoint),
 }
 
 /// Finds the last use of a vreg before a given target, including it in possible
@@ -1000,21 +993,13 @@ fn find_optimal_split_pos<F: Function>(
 /// The id of the new interval is returned, while the parent interval is mutated
 /// in place. The child interval starts after (including) split_pos.
 fn split<F: Function>(
-  state: &mut State<F>, id: LiveId, split_pos: Split,
+  state: &mut State<F>, id: LiveId, at_pos: InstPoint,
 ) -> LiveId {
   debug!(
-    "split {:?} {} at {:?}",
-    split_pos,
+    "split {:?} {}",
+    at_pos,
     state.intervals.display(id, &state.fragments),
-    split_pos
   );
-
-  let at_pos = match split_pos {
-    Split::At(pos) => pos,
-    Split::Between(from, to) => {
-      find_optimal_split_pos(state, id, from, to).unwrap()
-    }
-  };
 
   // Trying to split between an use and a def means there's nowhere to put
   // spill/fill/move instructions, so don't do that.
@@ -1189,23 +1174,26 @@ fn split_and_spill<F: Function>(
 
   let mut two_ways_child = None;
 
-  let child = if last_use == split_pos.at_use() {
+  let optimal_pos =
+    find_optimal_split_pos(state, id, last_use, split_pos).unwrap();
+
+  let child = if last_use == optimal_pos.at_use() {
     // The interval is used at last_use, but we must split there:
     // - split the parent at last_use into itself [..., prev of last use] and child: [last_use, ...]
     // - split the child into [last_use, last_use] and grandchild [succ of last_use, ...]
     debug!("two-ways split and spill");
 
-    let child = split(state, id, Split::At(last_use));
+    let child = split(state, id, last_use);
     state
       .intervals
       .set_reg(child, state.intervals.allocated_register(id).unwrap());
     state.spill(child);
     two_ways_child = Some(child);
 
-    split(state, child, Split::Between(last_use, split_pos))
+    split(state, child, optimal_pos)
   } else {
     state.spill(id);
-    split(state, id, Split::Between(last_use, split_pos))
+    split(state, id, optimal_pos)
   };
 
   let child_start = state.intervals.start_point(child, &state.fragments);
@@ -1227,7 +1215,7 @@ fn split_and_spill<F: Function>(
       }
       debug!("split spilled interval before next use @ {:?}", next_use_pos);
 
-      let child = split(state, child, Split::At(next_use_pos));
+      let child = split(state, child, next_use_pos);
       state.intervals.remove_spill(child);
       state.insert_unhandled(child);
     }
