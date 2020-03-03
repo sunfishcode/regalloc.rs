@@ -1363,11 +1363,13 @@ impl RangeFrag {
 pub struct SortedRangeFragIxs {
   pub frag_ixs: Vec<RangeFragIx>,
 }
+
 impl fmt::Debug for SortedRangeFragIxs {
   fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
     self.frag_ixs.fmt(fmt)
   }
 }
+
 impl SortedRangeFragIxs {
   pub fn show_with_fenv(
     &self, fenv: &TypedIxVec<RangeFragIx, RangeFrag>,

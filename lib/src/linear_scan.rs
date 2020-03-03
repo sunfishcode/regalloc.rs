@@ -15,18 +15,18 @@
 // - (perf) try to handle different register classes in different passes.
 // - (correctness) use sanitized reg uses in lieu of reg uses.
 
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::fmt;
-
 use log::{debug, trace};
+use rustc_hash::FxHashMap as HashMap;
+
+use std::cmp::Ordering;
+use std::fmt;
 
 use crate::analysis::run_analysis;
 use crate::data_structures::{
   cmp_range_frags, BlockIx, InstPoint, Map, PlusOne, Point, RangeFrag,
   RangeFragIx, RealRange, RealRangeIx, RealReg, RealRegUniverse, Reg, RegClass,
   Set, SortedRangeFragIxs, SpillCost, SpillSlot, TypedIxVec, VirtualRange,
-  VirtualRangeIx, VirtualReg, Writable,
+  VirtualRangeIx, VirtualReg, Writable, NUM_REG_CLASSES,
 };
 use crate::inst_stream::{fill_memory_moves, InstAndPoint, InstsAndPoints};
 use crate::interface::{Function, RegAllocResult};
@@ -317,6 +317,7 @@ struct State<'a, F: Function> {
   func: &'a F,
 
   fragments: Fragments,
+  scratches: &'a [Option<RealReg>],
   intervals: Intervals,
 
   /// Intervals that are starting after the current interval's start position.
@@ -337,7 +338,10 @@ struct State<'a, F: Function> {
 }
 
 impl<'a, F: Function> State<'a, F> {
-  fn new(func: &'a F, fragments: Fragments, intervals: Intervals) -> Self {
+  fn new(
+    func: &'a F, fragments: Fragments, intervals: Intervals,
+    scratches: &'a [Option<RealReg>],
+  ) -> Self {
     // Trick! Keep unhandled in reverse sorted order, so we can just pop
     // unhandled ids instead of shifting the first element.
     let unhandled: Vec<LiveId> =
@@ -346,6 +350,7 @@ impl<'a, F: Function> State<'a, F> {
     Self {
       func,
       fragments,
+      scratches,
       intervals,
       unhandled,
       active: Vec::new(),
@@ -453,6 +458,7 @@ fn select_naive_reg<F: Function>(
   let mut free_until_pos = RegisterMapping::with_default(
     reg_class,
     reg_universe,
+    state.scratches[reg_class as usize],
     InstPoint::max_value(),
   );
 
@@ -612,6 +618,7 @@ fn allocate_blocked_reg<F: Function>(
   let mut next_use_pos = RegisterMapping::with_default(
     reg_class,
     reg_universe,
+    state.scratches[reg_class as usize],
     InstPoint::max_value(),
   );
 
@@ -1237,11 +1244,13 @@ struct RegisterMapping<T> {
   offset: usize,
   regs: Vec<(RealReg, T)>,
   reg_class: RegClass,
+  scratch: Option<RealReg>,
 }
 
 impl<T: Copy> RegisterMapping<T> {
   fn with_default(
-    reg_class: RegClass, reg_universe: &RealRegUniverse, initial_value: T,
+    reg_class: RegClass, reg_universe: &RealRegUniverse,
+    scratch: Option<RealReg>, initial_value: T,
   ) -> Self {
     let mut regs = Vec::new();
     let mut offset = 0;
@@ -1255,11 +1264,33 @@ impl<T: Copy> RegisterMapping<T> {
         regs.push((reg.0, initial_value));
       }
     };
-    Self { offset, regs, reg_class }
+    Self { offset, regs, reg_class, scratch }
   }
 
-  fn iter<'a>(&'a self) -> std::slice::Iter<(RealReg, T)> {
-    self.regs.iter()
+  fn iter<'a>(&'a self) -> RegisterMappingIter<T> {
+    RegisterMappingIter { iter: self.regs.iter(), scratch: self.scratch }
+  }
+}
+
+struct RegisterMappingIter<'a, T: Copy> {
+  iter: std::slice::Iter<'a, (RealReg, T)>,
+  scratch: Option<RealReg>,
+}
+
+impl<'a, T: Copy> std::iter::Iterator for RegisterMappingIter<'a, T> {
+  type Item = &'a (RealReg, T);
+  fn next(&mut self) -> Option<Self::Item> {
+    match self.iter.next() {
+      Some(pair) => {
+        if Some(pair.0) == self.scratch {
+          // Skip to the next one.
+          self.iter.next()
+        } else {
+          Some(pair)
+        }
+      }
+      None => None,
+    }
   }
 }
 
@@ -1270,6 +1301,7 @@ impl<T> std::ops::Index<RealReg> for RegisterMapping<T> {
       rreg.get_class() == self.reg_class,
       "trying to index a reg from the wrong class"
     );
+    debug_assert!(Some(rreg) != self.scratch, "trying to use the scratch");
     &self.regs[rreg.get_index() - self.offset].1
   }
 }
@@ -1280,6 +1312,7 @@ impl<T> std::ops::IndexMut<RealReg> for RegisterMapping<T> {
       rreg.get_class() == self.reg_class,
       "trying to index a reg from the wrong class"
     );
+    debug_assert!(Some(rreg) != self.scratch, "trying to use the scratch");
     &mut self.regs[rreg.get_index() - self.offset].1
   }
 }
@@ -1295,10 +1328,24 @@ pub fn run<F: Function>(
   let (_sanitized_reg_uses, rlrs, vlrs, fragments, liveouts, _est_freqs) =
     run_analysis(func, reg_universe).map_err(|err| err.to_string())?;
 
+  let scratches_by_rc = {
+    let mut scratches_by_rc = vec![None; NUM_REG_CLASSES];
+    for i in 0..NUM_REG_CLASSES {
+      if let Some(info) = &reg_universe.allocable_by_class[i] {
+        if info.first == info.last {
+          return Err("at least 2 registers required for linear scan".into());
+        }
+        let scratch = reg_universe.regs[info.suggested_scratch.unwrap()].0;
+        scratches_by_rc[i] = Some(scratch);
+      }
+    }
+    scratches_by_rc
+  };
+
   let intervals = Intervals::new(rlrs, vlrs, &fragments);
 
   let (fragments, intervals, mut num_spill_slots) = {
-    let mut state = State::new(func, fragments, intervals);
+    let mut state = State::new(func, fragments, intervals, &scratches_by_rc);
 
     // Put all the fixed intervals in the inactive list: they're either becoming
     // active or should be remain inactive.
@@ -1377,6 +1424,7 @@ pub fn run<F: Function>(
     &fragments,
     &liveouts,
     &mut num_spill_slots,
+    &scratches_by_rc,
   );
 
   apply_registers(func, &intervals, virtual_intervals, &fragments);
@@ -1416,9 +1464,10 @@ fn find_enclosing_interval(
 fn resolve_moves<F: Function>(
   func: &F, intervals: &Intervals, virtual_intervals: &Vec<&LiveInterval>,
   fragments: &Fragments, liveouts: &TypedIxVec<BlockIx, Set<Reg>>,
-  spill_slot: &mut u32,
+  spill_slot: &mut u32, scratches_by_rc: &[Option<RealReg>],
 ) -> InstsAndPoints<F> {
   let mut memory_moves = InstsAndPoints::new();
+  let mut parallel_move_map = HashMap::default();
 
   debug!("resolve_moves");
   for &interval in virtual_intervals {
@@ -1451,8 +1500,7 @@ fn resolve_moves<F: Function>(
         let mut at_inst = at_inst;
         at_inst.pt = Point::Reload;
 
-        let wreg = Writable::from_reg(rreg);
-        let reload = if let Some(spill_slot) = intervals.spill_slot(parent_id) {
+        if let Some(spill_slot) = intervals.spill_slot(parent_id) {
           trace!(
             "inblock fixup: {:?} gen reload from {:?} to {:?} at {:?}",
             interval.id,
@@ -1460,25 +1508,26 @@ fn resolve_moves<F: Function>(
             rreg,
             at_inst
           );
-          Some(func.gen_reload(wreg, spill_slot, vreg))
+          parallel_move_map
+            .entry(at_inst)
+            .or_insert(Vec::new())
+            .push(MoveOp::new_reload(spill_slot, rreg, vreg));
         } else {
           let from_rreg = intervals.allocated_register(parent_id).unwrap();
+          trace!(
+            "inblock fixup: {:?} gen move from {:?} to {:?} at {:?}",
+            interval.id,
+            from_rreg,
+            rreg,
+            at_inst
+          );
           if from_rreg != rreg {
-            trace!(
-              "inblock fixup: {:?} gen move from {:?} to {:?} at {:?}",
-              interval.id,
-              from_rreg,
-              rreg,
-              at_inst
-            );
-            Some(func.gen_move(wreg, from_rreg, vreg))
-          } else {
-            None
+            parallel_move_map
+              .entry(at_inst)
+              .or_insert(Vec::new())
+              .push(MoveOp::new_move(from_rreg, rreg, vreg));
           }
         };
-        if let Some(reload) = reload {
-          memory_moves.push(InstAndPoint::new(at_inst, reload));
-        }
       }
     }
 
@@ -1498,7 +1547,6 @@ fn resolve_moves<F: Function>(
         Point::Spill
       };
 
-      let spill = func.gen_spill(spill_slot, rreg, vreg);
       trace!(
         "inblock fixup: {:?} gen spill from {:?} to {:?} at {:?}",
         interval.id,
@@ -1506,7 +1554,10 @@ fn resolve_moves<F: Function>(
         spill_slot,
         at_inst
       );
-      memory_moves.push(InstAndPoint::new(at_inst, spill));
+      parallel_move_map
+        .entry(at_inst)
+        .or_insert(Vec::new())
+        .push(MoveOp::new_spill(rreg, spill_slot, vreg));
     }
   }
 
@@ -1520,7 +1571,6 @@ fn resolve_moves<F: Function>(
   // Once that's done:
   // - resolve cycles in the pending moves
   // - generate real moves from the pending moves.
-  let mut parallel_move_map = HashMap::new();
   for block in func.blocks() {
     let successors = func.block_succs(block);
 
@@ -1639,7 +1689,9 @@ fn resolve_moves<F: Function>(
           }
 
           (None, None) => {
-            // Stack to stack: ugh.
+            // Stack to stack should not happen here, since two ranges for the
+            // same vreg can't be intersecting, so the same stack slot ought to
+            // be reused in this case.
             let left_spill_slot = intervals.spill_slot(cur_id).unwrap();
             let right_spill_slot = intervals.spill_slot(succ_id).unwrap();
             debug_assert_eq!(
@@ -1656,13 +1708,20 @@ fn resolve_moves<F: Function>(
 
   for (at_inst, parallel_moves) in parallel_move_map {
     let ordered_moves = schedule_moves(parallel_moves);
-    emit_moves(at_inst, ordered_moves, &mut memory_moves, func, spill_slot);
+    emit_moves(
+      at_inst,
+      ordered_moves,
+      &mut memory_moves,
+      func,
+      spill_slot,
+      scratches_by_rc,
+    );
   }
 
   memory_moves
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum MoveOperand {
   Reg(RealReg),
   Stack(SpillSlot),
@@ -1674,6 +1733,7 @@ impl MoveOperand {
   }
 }
 
+#[derive(Debug)]
 struct MoveOp {
   from: MoveOperand,
   to: MoveOperand,
@@ -1763,7 +1823,15 @@ fn schedule_moves(mut pending: Vec<MoveOp>) -> Vec<MoveOp> {
   let mut num_cycles = 0;
   let mut cur_cycles = 0;
 
+  trace!("pending moves: {:#?}", pending);
+
   while let Some(pm) = pending.pop() {
+    trace!("handling pending move {:?}", pm);
+    debug_assert!(
+      pm.from != pm.to,
+      "spurious moves should not have been inserted"
+    );
+
     let mut stack = vec![pm];
 
     while !stack.is_empty() {
@@ -1771,11 +1839,13 @@ fn schedule_moves(mut pending: Vec<MoveOp>) -> Vec<MoveOp> {
         find_blocking_move(&mut pending, stack.last().unwrap());
 
       if let Some((blocking_idx, blocking)) = blocking_pair {
+        trace!("found blocker: {:?}", blocking);
         let mut stack_cur = 0;
 
         let has_cycles = if let Some(mut cycled) =
           find_cycled_move(&mut stack, &mut stack_cur, blocking)
         {
+          trace!("found cycle: {:?}", cycled);
           debug_assert!(cycled.cycle_end.is_none());
           cycled.cycle_end = Some(cur_cycles);
           true
@@ -1787,6 +1857,7 @@ fn schedule_moves(mut pending: Vec<MoveOp>) -> Vec<MoveOp> {
           loop {
             match find_cycled_move(&mut stack, &mut stack_cur, blocking) {
               Some(ref mut cycled) => {
+                trace!("found more cycles ending on blocker: {:?}", cycled);
                 debug_assert!(cycled.cycle_end.is_none());
                 cycled.cycle_end = Some(cur_cycles);
               }
@@ -1822,6 +1893,7 @@ fn schedule_moves(mut pending: Vec<MoveOp>) -> Vec<MoveOp> {
 fn emit_moves<F: Function>(
   at_inst: InstPoint, ordered_moves: Vec<MoveOp>,
   memory_moves: &mut InstsAndPoints<F>, func: &F, num_spill_slots: &mut u32,
+  scratches_by_rc: &[Option<RealReg>],
 ) {
   let mut spill_slot = None;
   let mut in_cycle = false;
@@ -1835,16 +1907,29 @@ fn emit_moves<F: Function>(
       //   (B -> A)
       // This case handles (B -> A), which we reach last. We emit a move from
       // the saved value of B, to A.
-      let inst = match mov.to {
-        MoveOperand::Reg(dst_reg) => func.gen_reload(
-          Writable::from_reg(dst_reg),
-          spill_slot.expect("should have a cycle spill slot"),
-          mov.vreg,
-        ),
-        MoveOperand::Stack(_dst_spill) => unimplemented!("stack to stack move"),
+      match mov.to {
+        MoveOperand::Reg(dst_reg) => {
+          let inst = func.gen_reload(
+            Writable::from_reg(dst_reg),
+            spill_slot.expect("should have a cycle spill slot"),
+            mov.vreg,
+          );
+          memory_moves.push(InstAndPoint::new(at_inst, inst));
+        }
+        MoveOperand::Stack(dst_spill) => {
+          let scratch = scratches_by_rc[mov.vreg.get_class() as usize]
+            .expect("missing scratch reg");
+          let inst = func.gen_reload(
+            Writable::from_reg(scratch),
+            spill_slot.expect("should have a cycle spill slot"),
+            mov.vreg,
+          );
+          memory_moves.push(InstAndPoint::new(at_inst, inst));
+          let inst = func.gen_spill(dst_spill, scratch, mov.vreg);
+          memory_moves.push(InstAndPoint::new(at_inst, inst));
+        }
       };
 
-      memory_moves.push(InstAndPoint::new(at_inst, inst));
       in_cycle = false;
       continue;
     }
@@ -1865,14 +1950,26 @@ fn emit_moves<F: Function>(
         }
       }
 
-      let inst = match mov.to {
+      match mov.to {
         MoveOperand::Reg(src_reg) => {
-          func.gen_spill(spill_slot.unwrap(), src_reg, mov.vreg)
+          let inst = func.gen_spill(spill_slot.unwrap(), src_reg, mov.vreg);
+          memory_moves.push(InstAndPoint::new(at_inst, inst));
         }
-        MoveOperand::Stack(_src_spill) => unimplemented!("stack to stack move"),
+        MoveOperand::Stack(src_spill) => {
+          let scratch = scratches_by_rc[mov.vreg.get_class() as usize]
+            .expect("missing scratch reg");
+          let inst =
+            func.gen_reload(Writable::from_reg(scratch), src_spill, mov.vreg);
+          memory_moves.push(InstAndPoint::new(at_inst, inst));
+          let inst = func.gen_spill(
+            spill_slot.expect("should have a cycle spill slot"),
+            scratch,
+            mov.vreg,
+          );
+          memory_moves.push(InstAndPoint::new(at_inst, inst));
+        }
       };
 
-      memory_moves.push(InstAndPoint::new(at_inst, inst));
       in_cycle = true;
       continue;
     }
