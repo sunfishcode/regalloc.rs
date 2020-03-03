@@ -470,6 +470,12 @@ fn lsra_ssort_8() {
   test_utils::check_lsra("ssort", 8, 0);
 }
 
+// Requires 2 registers.
+#[test]
+fn lsra_ssort2() {
+  test_utils::loop_lsra("ssort2", 3);
+}
+
 // 3_loops requires at least 2 registers.
 #[test]
 fn bt_3_loops() {

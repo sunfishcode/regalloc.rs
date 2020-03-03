@@ -11,6 +11,97 @@ use crate::test_framework::*;
 
 use std::path::Path;
 
+/// Reduced sort test.
+fn test_sort2() -> Func {
+  let mut func = Func::new("ssort2");
+  func.set_entry("Lstart");
+
+  let lo = func.new_virtual_reg(RegClass::I32);
+  let hi = func.new_virtual_reg(RegClass::I32);
+  let i = func.new_virtual_reg(RegClass::I32);
+  let j = func.new_virtual_reg(RegClass::I32);
+  let h = func.new_virtual_reg(RegClass::I32);
+  let big_n = func.new_virtual_reg(RegClass::I32);
+  let v = func.new_virtual_reg(RegClass::I32);
+  let hp = func.new_virtual_reg(RegClass::I32);
+  let t0 = func.new_virtual_reg(RegClass::I32);
+  let zero = func.new_virtual_reg(RegClass::I32);
+
+  func.block(
+    "Lstart",
+    vec![
+      i_imm(zero, 0),
+      i_imm(t0, 1),
+      i_store(AM_RI(zero, 0), t0),
+      i_imm(t0, 4),
+      i_store(AM_RI(zero, 1), t0),
+      i_imm(t0, 13),
+      i_store(AM_RI(zero, 2), t0),
+      i_imm(t0, 30),
+      i_store(AM_RI(zero, 3), t0),
+      i_imm(t0, 29),
+      i_store(AM_RI(zero, 4), t0),
+      i_imm(t0, 31),
+      i_store(AM_RI(zero, 5), t0),
+      i_imm(lo, 3),
+      i_imm(hi, 5),
+      i_sub(t0, hi, RI_R(lo)),
+      i_add(big_n, t0, RI_I(1)),
+      i_imm(hp, 0),
+      i_goto("L11"),
+    ],
+  );
+  func.block(
+    "L11",
+    vec![
+      i_load(t0, AM_R(hp)),
+      i_cmp_gt(t0, t0, RI_R(big_n)),
+      i_goto_ctf(t0, "L19", "L11a"),
+    ],
+  );
+  func.block("L19", vec![i_goto("L20")]);
+  func.block("L11a", vec![i_add(hp, hp, RI_I(1)), i_goto("L11")]);
+  func.block(
+    "L20",
+    vec![i_cmp_lt(t0, hp, RI_I(1)), i_goto_ctf(t0, "L60", "L21a")],
+  );
+  func.block(
+    "L21a",
+    vec![
+      i_sub(t0, hp, RI_I(1)),
+      i_load(h, AM_R(t0)),
+      i_add(i, lo, RI_R(h)),
+      i_goto("L30"),
+    ],
+  );
+  func.block(
+    "L30",
+    vec![i_cmp_gt(t0, i, RI_R(hi)), i_goto_ctf(t0, "L50", "L30a")],
+  );
+  func.block(
+    "L30a",
+    vec![i_load(v, AM_R(i)), i_add(j, i, RI_I(0)), i_goto("L40")],
+  );
+  func.block(
+    "L40",
+    vec![
+      i_sub(t0, j, RI_R(h)),
+      i_load(t0, AM_R(t0)),
+      //i_print_i(t0),
+      i_cmp_le(t0, t0, RI_R(v)),
+      i_goto_ctf(t0, "L41", "L40a"),
+    ],
+  );
+  func.block("L41", vec![i_goto("L45")]);
+  func.block("L40a", vec![i_goto("fin")]);
+  func.block("L45", vec![i_goto("L30")]);
+  func.block("L50", vec![i_goto("L20")]);
+  func.block("L60", vec![i_goto("fin")]);
+  func.block("fin", vec![i_print_s("\n"), i_finish(None)]);
+  func.finish();
+  func
+}
+
 fn test_sort() -> Func {
   let mut func = Func::new("ssort");
   func.set_entry("Lstart");
@@ -1291,7 +1382,8 @@ fn test_fp2() -> Func {
 pub fn find_func(name: &str) -> Result<Func, Vec<String>> {
   // This is really stupid.  Fortunately it's not performance critical :)
   let all_funcs = vec![
-    test_sort(),             // shellsort
+    test_sort(), // shellsort
+    test_sort2(),
     test_3_loops(),          // three loops
     test_stmts(),            // a small Stmty test
     test_needs_splitting(),  // LR splitting might help here ..

@@ -1935,6 +1935,8 @@ fn emit_moves<F: Function>(
   let mut spill_slot = None;
   let mut in_cycle = false;
 
+  trace!("emit_moves");
+
   for mov in ordered_moves {
     if let Some(_) = &mov.cycle_end {
       debug_assert!(in_cycle);
@@ -1952,6 +1954,7 @@ fn emit_moves<F: Function>(
             mov.vreg,
           );
           memory_moves.push(InstAndPoint::new(at_inst, inst));
+          trace!("finishing cycle: {:?} -> {:?}", spill_slot.unwrap(), dst_reg);
         }
         MoveOperand::Stack(dst_spill) => {
           let scratch = scratches_by_rc[mov.vreg.get_class() as usize]
@@ -1964,6 +1967,12 @@ fn emit_moves<F: Function>(
           memory_moves.push(InstAndPoint::new(at_inst, inst));
           let inst = func.gen_spill(dst_spill, scratch, mov.vreg);
           memory_moves.push(InstAndPoint::new(at_inst, inst));
+          trace!(
+            "finishing cycle: {:?} -> {:?} -> {:?}",
+            spill_slot.unwrap(),
+            scratch,
+            dst_spill
+          );
         }
       };
 
@@ -1991,6 +2000,7 @@ fn emit_moves<F: Function>(
         MoveOperand::Reg(src_reg) => {
           let inst = func.gen_spill(spill_slot.unwrap(), src_reg, mov.vreg);
           memory_moves.push(InstAndPoint::new(at_inst, inst));
+          trace!("starting cycle: {:?} -> {:?}", src_reg, spill_slot.unwrap());
         }
         MoveOperand::Stack(src_spill) => {
           let scratch = scratches_by_rc[mov.vreg.get_class() as usize]
@@ -2004,15 +2014,21 @@ fn emit_moves<F: Function>(
             mov.vreg,
           );
           memory_moves.push(InstAndPoint::new(at_inst, inst));
+          trace!(
+            "starting cycle: {:?} -> {:?} -> {:?}",
+            src_spill,
+            scratch,
+            spill_slot.unwrap()
+          );
         }
       };
 
       in_cycle = true;
-      continue;
     }
 
     // A normal move which is not part of a cycle.
     memory_moves.push(InstAndPoint::new(at_inst, mov.gen_inst(func)));
+    trace!("moving {:?} -> {:?}", mov.from, mov.to);
   }
 }
 
