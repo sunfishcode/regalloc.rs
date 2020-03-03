@@ -6,12 +6,8 @@
 //! `Function` trait for it so that we can use the regalloc public interface.
 
 use arbitrary::Arbitrary;
+use regalloc::*;
 
-use regalloc::{
-  BlockIx, InstIx, Map, Range, RealReg, RealRegUniverse, Reg, RegClass,
-  RegClassInfo, Set, SpillSlot, TypedIxVec, VirtualReg, Writable,
-  NUM_REG_CLASSES,
-};
 use std::fmt;
 
 use crate::validator::{validate, Context as ValidatorContext, RegRef};

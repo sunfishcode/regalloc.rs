@@ -1485,9 +1485,11 @@ fn resolve_moves<F: Function>(
     if let Some(spill_slot) = interval.spill_slot {
       // This interval has been spilled (i.e. split). Spill after the last def
       // or before the last use.
+      //
+      // Since a spill slot indicates that a child may reload from the spill
+      // slot, do it even if it might be located at a block boundary.
+      // TODO make sure it doesn't cause double-spills.
       let end = intervals.end_point(interval.id, &fragments);
-      // TODO must probably make something finer grain on the last effective
-      // use, def or mod of the instruction.
       let mut at_inst = end;
       at_inst.pt = if at_inst.pt == Point::Use {
         Point::Reload
@@ -1495,17 +1497,16 @@ fn resolve_moves<F: Function>(
         debug_assert!(at_inst.pt == Point::Def);
         Point::Spill
       };
-      if !is_block_boundary(func, end) {
-        let spill = func.gen_spill(spill_slot, rreg, vreg);
-        trace!(
-          "inblock fixup: {:?} gen spill from {:?} to {:?} at {:?}",
-          interval.id,
-          rreg,
-          spill_slot,
-          at_inst
-        );
-        memory_moves.push(InstAndPoint::new(at_inst, spill));
-      }
+
+      let spill = func.gen_spill(spill_slot, rreg, vreg);
+      trace!(
+        "inblock fixup: {:?} gen spill from {:?} to {:?} at {:?}",
+        interval.id,
+        rreg,
+        spill_slot,
+        at_inst
+      );
+      memory_moves.push(InstAndPoint::new(at_inst, spill));
     }
   }
 

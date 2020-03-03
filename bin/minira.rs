@@ -393,8 +393,28 @@ fn bt_ssort() {
   test_utils::check_bt("ssort", 8, 8);
 }
 #[test]
-fn lsra_ssort() {
-  test_utils::check_lsra("ssort", 8, 8);
+fn lsra_ssort_8() {
+  test_utils::check_lsra("ssort", 8, 0);
+}
+#[test]
+fn lsra_ssort_7() {
+  test_utils::check_lsra("ssort", 7, 0);
+}
+#[test]
+fn lsra_ssort_6() {
+  test_utils::check_lsra("ssort", 6, 0);
+}
+#[test]
+fn lsra_ssort_5() {
+  test_utils::check_lsra("ssort", 5, 0);
+}
+#[test]
+fn lsra_ssort_4() {
+  test_utils::check_lsra("ssort", 4, 0);
+}
+#[test]
+fn lsra_ssort_3() {
+  test_utils::check_lsra("ssort", 3, 0);
 }
 
 #[test]
