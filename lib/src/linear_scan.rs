@@ -828,6 +828,8 @@ fn allocate_blocked_reg<F: Function>(
 fn find_last_use_before<F: Function>(
   state: &mut State<F>, id: LiveId, target: InstPoint,
 ) -> InstPoint {
+  trace!("searching last use of {:?} before {:?}", id, target,);
+
   debug_assert!(
     state.intervals.start_point(id, &state.fragments) <= target,
     "find_last_use_before: no intervals before the target"
@@ -855,6 +857,7 @@ fn find_last_use_before<F: Function>(
       }
     }
   }
+
   trace!(
     "last use of {:?} before {:?} found at {:?}",
     id,
@@ -1325,7 +1328,7 @@ impl<T> std::ops::IndexMut<RealReg> for RegisterMapping<T> {
 pub fn run<F: Function>(
   func: &mut F, reg_universe: &RealRegUniverse,
 ) -> Result<RegAllocResult<F>, String> {
-  let (_sanitized_reg_uses, rlrs, vlrs, fragments, liveouts, _est_freqs) =
+  let (_sanitized_reg_uses, rlrs, mut vlrs, fragments, liveouts, _est_freqs) =
     run_analysis(func, reg_universe).map_err(|err| err.to_string())?;
 
   let scratches_by_rc = {
@@ -1341,6 +1344,39 @@ pub fn run<F: Function>(
     }
     scratches_by_rc
   };
+
+  {
+    // TODO technically, this is an optimization, but it seems necessary because
+    // of the way the analysis creates vranges not starting with uses.
+    //
+    // Group all virtual ranges by virtual register, since the analysis doesn't
+    // do this for us.
+    let mut vlr_by_vreg = HashMap::default();
+
+    let mut i = 0;
+    let mut remaining = vlrs.len();
+    while remaining > 0 {
+      let ix = VirtualRangeIx::new(i);
+      let vreg = vlrs[ix].vreg;
+      if let Some(prev) = vlr_by_vreg.get(&vreg) {
+        // Steal fragments from this vlr and add these into the previous one.
+        let mut cur = vlrs.remove(ix);
+        debug_assert!(*prev < ix);
+        vlrs[*prev]
+          .sorted_frags
+          .frag_ixs
+          .append(&mut cur.sorted_frags.frag_ixs);
+      } else {
+        vlr_by_vreg.insert(vreg, VirtualRangeIx::new(i as u32));
+        i += 1;
+      }
+      remaining -= 1;
+    }
+    for vlr in vlrs.iter_mut() {
+      vlr.sorted_frags.sort(&fragments);
+      vlr.sorted_frags.check(&fragments);
+    }
+  }
 
   let intervals = Intervals::new(rlrs, vlrs, &fragments);
 
@@ -1494,9 +1530,10 @@ fn resolve_moves<F: Function>(
     let vreg = intervals.vreg(interval.id);
 
     if let Some(parent_id) = interval.parent {
-      // Reconnect with the parent location, by adding a move if needed.
+      // Reconnect with the parent location, by adding a move if needed, unless
+      // it's a new definition.
       let at_inst = intervals.start_point(interval.id, &fragments);
-      if !is_block_boundary(func, at_inst) {
+      if at_inst.pt == Point::Use && !is_block_boundary(func, at_inst) {
         let mut at_inst = at_inst;
         at_inst.pt = Point::Reload;
 
