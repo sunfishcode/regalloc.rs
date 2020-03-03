@@ -1377,6 +1377,42 @@ fn test_fp2() -> Func {
   bif.finish(stmts, None)
 }
 
+fn test_stmt_repeat() -> Func {
+  let mut bif = Blockifier::new("stmt_repeat");
+
+  let max_j = bif.new_virtual_reg(RegClass::I32);
+  let i = bif.new_virtual_reg(RegClass::I32);
+  let j = bif.new_virtual_reg(RegClass::I32);
+  let k = bif.new_virtual_reg(RegClass::I32);
+  let bi = bif.new_virtual_reg(RegClass::I32);
+
+  let stmts = vec![
+    s_imm(max_j, 3),
+    s_imm(i, 0),
+    s_imm(j, 0),
+    s_repeat_until(
+      vec![
+        s_imm(i, 0),
+        s_repeat_until(
+          vec![
+            s_sub(k, i, RI_I(1)),
+            s_addm(i, RI_I(1)),
+            s_print_i(i),
+            s_cmp_ge(bi, i, RI_I(2)),
+          ],
+          bi,
+        ),
+        s_imm(i, 0),
+        s_addm(j, RI_I(1)),
+        s_cmp_ge(bi, j, RI_R(max_j)),
+      ],
+      bi,
+    ),
+  ];
+
+  bif.finish(stmts, None)
+}
+
 // This is the list of available tests.  This function returns either the
 // requested Func, or if not found, a list of the available ones.
 pub fn find_func(name: &str) -> Result<Func, Vec<String>> {
@@ -1393,6 +1429,7 @@ pub fn find_func(name: &str) -> Result<Func, Vec<String>> {
     test_ssort_2a(),         // 2-operand version of shellsort
     test_fp1(),              // very feeble floating point
     test_fp2(),              // floating point with loops and arrays
+    test_stmt_repeat(),
     test_stmt_loop(),
   ];
 

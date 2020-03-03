@@ -234,6 +234,9 @@ fn main() {
     run_func(&func, "After allocation", &reg_universe, RunStage::AfterRegalloc);
 
   println!("");
+  println!("result before: {:#?}", before_regalloc_result);
+  println!("result after: {:#?}", after_regalloc_result);
+  println!("");
 
   check_results(&before_regalloc_result, &after_regalloc_result);
 }
