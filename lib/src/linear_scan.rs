@@ -971,9 +971,11 @@ fn find_optimal_split_pos<F: Function>(
     }
 
     let next_use = InstPoint::new_use(iix.plus(1));
-    if reg_uses.defined.contains(wreg) && next_use < to {
-      found = Some(next_use);
-      break;
+    if state.intervals.covers(id, &next_use, &state.fragments) {
+      if reg_uses.defined.contains(wreg) && next_use < to {
+        found = Some(next_use);
+        break;
+      }
     }
   }
 
@@ -1551,14 +1553,14 @@ fn resolve_moves<F: Function>(
             .push(MoveOp::new_reload(spill_slot, rreg, vreg));
         } else {
           let from_rreg = intervals.allocated_register(parent_id).unwrap();
-          trace!(
-            "inblock fixup: {:?} gen move from {:?} to {:?} at {:?}",
-            interval.id,
-            from_rreg,
-            rreg,
-            at_inst
-          );
           if from_rreg != rreg {
+            trace!(
+              "inblock fixup: {:?} gen move from {:?} to {:?} at {:?}",
+              interval.id,
+              from_rreg,
+              rreg,
+              at_inst
+            );
             parallel_move_map
               .entry(at_inst)
               .or_insert(Vec::new())
