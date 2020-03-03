@@ -1263,6 +1263,9 @@ pub struct RunResult {
   /// Number of dynamically executed steps.
   pub num_steps: usize,
 
+  /// Number of dynamically executed reload instructions.
+  pub num_reloads: usize,
+
   /// Everything that's been printed out.
   pub stdout: String,
 }
@@ -1305,6 +1308,7 @@ pub fn run_func(
   Ok(RunResult {
     ret_value: istate.ret_value,
     num_steps: istate.num_insts,
+    num_reloads: istate.num_reloads,
     stdout: istate.stdout,
   })
 }
