@@ -894,11 +894,7 @@ fn find_last_use_before<F: Function>(
   fragments: &Fragments, extend: ModifiedMeans,
 ) -> InstPoint {
   trace!("searching last use of {:?} before {:?}", id, target,);
-
-  debug_assert!(
-    int.start(id, &fragments) <= target,
-    "find_last_use_before: no intervals before the target"
-  );
+  debug_assert!(int.start(id, &fragments) <= target);
 
   let reg = int.vreg(id).to_reg();
   let wreg = Writable::from_reg(reg);
@@ -942,13 +938,10 @@ fn find_last_use_before<F: Function>(
     }
   }
 
-  trace!(
-    "last use of {:?} before {:?} found at {:?}",
-    id,
-    target,
-    last_use.as_ref().expect("couldn't find last use"),
-  );
-  return last_use.unwrap();
+  if let Some(ref last_use) = last_use {
+    trace!("last use of {:?} before {:?} found at {:?}", id, target, last_use,);
+  }
+  return last_use.expect("should have found last use");
 
   /* TODO revisit this code later.
   // Find the first fragment which could contain candidates, then look
