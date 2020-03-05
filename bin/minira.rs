@@ -567,8 +567,8 @@ fn bt_ssort_2a() {
 }
 #[test]
 fn lsra_2a_ssort() {
-  assert!(test_utils::run_lsra("fill_then_sum_2a", 1, 0).is_err());
-  assert!(test_utils::run_lsra("fill_then_sum_2a", 2, 0).is_err());
+  assert!(test_utils::run_lsra("ssort_2a", 1, 0).is_err());
+  assert!(test_utils::run_lsra("ssort_2a", 2, 0).is_err());
   // TODO use loop_lsra starting from 3 here.
   for i in 6..10 {
     test_utils::check_lsra("ssort_2a", i, 0);
@@ -618,6 +618,11 @@ fn lsra_simple_loop() {
 #[test]
 fn lsra_stmt_loop() {
   test_utils::loop_lsra("stmt_loop", 3)
+}
+
+#[test]
+fn lsra_stmt_repeat() {
+  test_utils::loop_lsra("stmt_repeat", 3)
 }
 
 #[test]
