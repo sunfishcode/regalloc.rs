@@ -19,6 +19,7 @@ use log::{debug, trace};
 use rustc_hash::FxHashMap as HashMap;
 
 use std::cmp::Ordering;
+use std::env;
 use std::fmt;
 
 use crate::analysis::run_analysis;
@@ -336,6 +337,8 @@ impl Intervals {
 struct State<'a, F: Function> {
   func: &'a F,
 
+  optimal_split_strategy: OptimalSplitStrategy,
+
   fragments: Fragments,
   scratches: &'a [Option<RealReg>],
   intervals: Intervals,
@@ -367,8 +370,19 @@ impl<'a, F: Function> State<'a, F> {
     let unhandled: Vec<IntId> =
       intervals.data.iter().rev().map(|int| int.id).collect();
 
+    let optimal_split_strategy = match env::var("SPLIT") {
+      Ok(s) => match s.as_str() {
+        "to" => OptimalSplitStrategy::To,
+        "n" => OptimalSplitStrategy::NextFrom,
+        "nn" => OptimalSplitStrategy::NextNextFrom,
+        _ => OptimalSplitStrategy::From,
+      },
+      Err(_) => OptimalSplitStrategy::From,
+    };
+
     Self {
       func,
+      optimal_split_strategy,
       fragments,
       scratches,
       intervals,
@@ -990,98 +1004,56 @@ fn find_last_use_before<F: Function>(
   */
 }
 
-//fn is_vreg_defined_at<F: Function>(
-//state: &State<F>, id: IntId, pos: InstPoint,
-//) -> bool {
-//if pos.pt != Point::Def {
-//return false;
-//}
-//let reg = Writable::from_reg(state.intervals.vreg(id).to_reg());
-//// TODO what about modified?
-//state.func.get_regs(state.func.get_insn(pos.iix)).defined.contains(reg)
-//}
+/// Which strategy should we use when trying to find the best split position?
+/// TODO Consider loop depth to avoid splitting in the middle of a loop
+/// whenever possible.
+enum OptimalSplitStrategy {
+  From,
+  To,
+  NextFrom,
+  NextNextFrom,
+}
 
 /// Finds an optimal split position, whenever we're given a range of possible
 /// positions where to split.
-///
-/// Currently, selects:
-/// - the left part of the range if it's a def or a use,
-/// - or the use just next to the left part of the range.
 fn find_optimal_split_pos<F: Function>(
   state: &State<F>, id: IntId, from: InstPoint, to: InstPoint,
-) -> Result<InstPoint, ()> {
-  // TODO Consider loop depth to avoid splitting in the middle of a loop
-  // whenever possible.
+) -> InstPoint {
   trace!("find_optimal_split_pos between {:?} and {:?}", from, to);
 
   debug_assert!(from <= to, "split between positions are inconsistent");
-  //debug_assert!(
-  //state.intervals.covers(id, &from, &state.fragments),
-  //"split between start not in interval"
-  //);
+  debug_assert!(
+    from >= state.intervals.start(id, &state.fragments),
+    "split should happen after the start"
+  );
   debug_assert!(
     to <= state.intervals.end(id, &state.fragments),
-    "split between end not in interval"
+    "split should happen before the end"
   );
 
   if from == to {
-    //debug_assert!(
-    //is_vreg_defined_at(state, id, from) || from.pt == Point::Use,
-    //"nowhere to split in between {:?} and itself",
-    //from
-    //);
     debug_assert!(state.intervals.covers(id, &from, &state.fragments));
-    return Ok(from);
+    return from;
   }
 
-  // TODO ?
-  return Ok(from);
-
-  let reg = state.intervals.vreg(id).to_reg();
-  let wreg = Writable::from_reg(reg);
-
-  let mut found = None;
-  for iix in from.iix.dotdot(to.iix.plus(1)) {
-    let reg_uses = state.func.get_regs(state.func.get_insn(iix));
-
-    let iuse = InstPoint::new_use(iix);
-    if iuse >= from
-      && iuse <= to
-      && state.intervals.covers(id, &iuse, &state.fragments)
-    {
-      //if !reg_uses.used.contains(reg) && !reg_uses.modified.contains(wreg) {
-      found = Some(iuse);
-      break;
-      //}
+  match state.optimal_split_strategy {
+    OptimalSplitStrategy::To => return to,
+    OptimalSplitStrategy::NextFrom => {
+      let pos = next_pos(from);
+      if pos <= to {
+        return pos;
+      }
     }
-
-    //let next_use = InstPoint::new_use(iix.plus(1));
-    let idef = InstPoint::new_def(iix);
-    if idef >= from
-      && idef <= to
-      && state.intervals.covers(id, &idef, &state.fragments)
-    {
-      //if state.intervals.covers(id, &next_use, &state.fragments) {
-      //if reg_uses.defined.contains(wreg) && next_use < to {
-      found = Some(idef);
-      break;
-      //}
+    OptimalSplitStrategy::NextNextFrom => {
+      let pos = next_pos(next_pos(from));
+      if pos <= to {
+        return pos;
+      }
     }
+    OptimalSplitStrategy::From => {}
   }
 
-  if let Some(pos) = found {
-    trace!("find_optimal_split_pos: {:?}", pos);
-    debug_assert!(from <= pos && pos <= to);
-    debug_assert!(state.intervals.covers(id, &pos, &state.fragments));
-    return Ok(pos);
-  }
-
-  Err(())
-  //if from.pt == Point::Use {
-  //Ok(from)
-  //} else {
-  //Err(())
-  //}
+  from
 }
 
 /// Splits the interval at the given position.
@@ -1101,22 +1073,11 @@ fn split<F: Function>(
     state.intervals.display(id, &state.fragments),
   );
 
-  // Trying to split between an use and a def means there's nowhere to put
-  // spill/fill/move instructions, so don't do that.
-  //debug_assert!(
-  //is_vreg_defined_at(state, id, at_pos) || at_pos.pt == Point::Use,
-  //"invalid split position"
-  //);
-  //debug_assert!(
-  //state.intervals.covers(id, &at_pos, &state.fragments),
-  //"trying to split outside the interval"
-  //);
-
   let parent_start = state.intervals.start(id, &state.fragments);
-  debug_assert!(parent_start <= at_pos, "we must split after the start");
+  debug_assert!(parent_start <= at_pos, "must split after the start");
   debug_assert!(
-    state.intervals.end(id, &state.fragments) != parent_start,
-    "no space to split"
+    at_pos <= state.intervals.end(id, &state.fragments),
+    "must split before the end"
   );
 
   let vreg = state.intervals.vreg(id);
@@ -1125,20 +1086,14 @@ fn split<F: Function>(
 
   // We need to split at the first range that's before or contains the "at"
   // position, reading from the end to the start.
-  let mut split_ranges_at = frags
+  let split_ranges_at = frags
     .frag_ixs
     .iter()
-    //.rposition(|&frag_id| {
-    //let frag = fragments[frag_id];
-    //frag.last < at_pos || frag.contains(&at_pos)
-    //})
     .position(|&frag_id| {
       let frag = fragments[frag_id];
       frag.first >= at_pos || frag.contains(&at_pos)
     })
     .expect("split would create an empty child");
-
-  trace!("split at {:?}", split_ranges_at);
 
   let mut child_frag_ixs = frags.frag_ixs.split_off(split_ranges_at);
 
@@ -1295,8 +1250,7 @@ fn split_and_spill<F: Function>(
   let two_ways_child = None;
 
   let optimal_pos =
-    find_optimal_split_pos(state, id, next_pos(last_use), split_pos)
-      .expect("should always find a possible split position");
+    find_optimal_split_pos(state, id, next_pos(last_use), split_pos);
 
   //let child = if last_use == optimal_pos.at_use() {
   //// The interval is used at last_use, but we must split there:
