@@ -63,7 +63,7 @@ impl fmt::Debug for LiveIntervalKind {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum Location {
   None,
   Reg(RealReg),
@@ -373,6 +373,7 @@ impl<'a, F: Function> State<'a, F> {
     let unhandled: Vec<IntId> =
       intervals.data.iter().rev().map(|int| int.id).collect();
 
+    // Useful for debugging.
     let optimal_split_strategy = match env::var("SPLIT") {
       Ok(s) => match s.as_str() {
         "to" => OptimalSplitStrategy::To,
@@ -1436,124 +1437,6 @@ fn resolve_moves<F: Function>(
   let mut parallel_move_map = HashMap::default();
 
   debug!("resolve_moves");
-  for &interval in virtual_intervals {
-    let location = interval.location();
-    match location {
-      Location::None => panic!("interval has no location after regalloc!"),
-
-      Location::Reg(rreg) => {
-        let parent_id = match interval.parent {
-          Some(pid) => pid,
-          None => continue,
-        };
-
-        // Reconnect with the parent location, by adding a move if needed, unless
-        // it's a new definition.
-        let mut start = intervals.start(interval.id, &fragments);
-        let next_use = match find_next_use_after(
-          intervals,
-          interval.id,
-          start,
-          reg_uses,
-          fragments,
-        ) {
-          Some(u) => u,
-          // XXX is this correct?
-          None => continue,
-        };
-
-        let vreg = intervals.vreg(interval.id);
-        if next_use.pt == Point::Use && !is_block_boundary(func, start) {
-          let at_inst = match start.pt {
-            Point::Def => {
-              start.pt = Point::Spill;
-              start
-            }
-            Point::Use => {
-              start.pt = Point::Reload;
-              start
-            }
-            _ => unreachable!(),
-          };
-
-          match intervals.location(parent_id) {
-            Location::None => unreachable!(),
-
-            Location::Reg(from_rreg) => {
-              if from_rreg != rreg {
-                trace!(
-                  "inblock fixup: {:?} gen move from {:?} to {:?} at {:?}",
-                  interval.id,
-                  from_rreg,
-                  rreg,
-                  at_inst
-                );
-                parallel_move_map
-                  .entry(at_inst)
-                  .or_insert(Vec::new())
-                  .push(MoveOp::new_move(from_rreg, rreg, vreg));
-              }
-            }
-
-            Location::Stack(spill) => {
-              trace!(
-                "inblock fixup: {:?} gen reload from {:?} to {:?} at {:?}",
-                interval.id,
-                spill,
-                rreg,
-                at_inst
-              );
-              parallel_move_map
-                .entry(at_inst)
-                .or_insert(Vec::new())
-                .push(MoveOp::new_reload(spill, rreg, vreg));
-            }
-          }
-        }
-      }
-
-      Location::Stack(spill) => {
-        let vreg = intervals.vreg(interval.id);
-
-        // This interval has been spilled (i.e. split). Spill after the last def
-        // or before the last use.
-        //
-        // Since a spill slot indicates that a child may reload from the spill
-        // slot, do it even if it might be located at a block boundary.
-        let parent_id = interval.parent.expect("spilled => has parent");
-
-        let mut at_inst = intervals.end(parent_id, &fragments);
-        at_inst.pt = if at_inst.pt == Point::Use {
-          Point::Reload
-        } else {
-          debug_assert!(at_inst.pt == Point::Def);
-          Point::Spill
-        };
-
-        match intervals.location(parent_id) {
-          Location::None => unreachable!(),
-
-          Location::Reg(rreg) => {
-            trace!(
-              "inblock fixup: {:?} gen spill from {:?} to {:?} at {:?}",
-              interval.id,
-              rreg,
-              spill,
-              at_inst
-            );
-            parallel_move_map
-              .entry(at_inst)
-              .or_insert(Vec::new())
-              .push(MoveOp::new_spill(rreg, spill, vreg));
-          }
-
-          Location::Stack(parent_spill) => {
-            debug_assert_eq!(parent_spill, spill);
-          }
-        }
-      }
-    }
-  }
 
   // Figure the sequence of parallel moves to insert at block boundaries:
   // - for each block
@@ -1581,6 +1464,8 @@ fn resolve_moves<F: Function>(
       for &reg in liveouts[block].iter() {
         let vreg =
           if let Some(vreg) = reg.as_virtual_reg() { vreg } else { continue };
+
+        trace!("considering boundary {:?} -> {:?} for {:?}", block, succ, vreg);
 
         let (succ_first_inst, succ_id) = {
           let first_inst = InstPoint::new_use(func.block_insns(succ).first());
@@ -1618,6 +1503,10 @@ fn resolve_moves<F: Function>(
           ));
           (last_inst, cur_id)
         };
+
+        if succ_id == cur_id {
+          continue;
+        }
 
         let insert_pos = if cur_has_one_succ {
           let mut pos = cur_last_inst;
@@ -1693,10 +1582,150 @@ fn resolve_moves<F: Function>(
   }
   debug!("");
 
-  for (at_inst, parallel_moves) in parallel_move_map {
+  for (at_inst, parallel_moves) in parallel_move_map.iter_mut() {
     let ordered_moves = schedule_moves(parallel_moves);
     emit_moves(
-      at_inst,
+      *at_inst,
+      ordered_moves,
+      &mut memory_moves,
+      func,
+      spill_slot,
+      scratches_by_rc,
+    );
+  }
+  parallel_move_map.clear();
+
+  for &interval in virtual_intervals {
+    let location = interval.location();
+
+    let parent_id = match interval.parent {
+      Some(pid) => pid,
+      None => {
+        debug_assert!(intervals.location(interval.id).spill().is_none());
+        continue;
+      }
+    };
+
+    let parent_end = intervals.end(parent_id, fragments);
+    let child_start = intervals.start(interval.id, fragments);
+
+    if parent_end.iix.plus(1) == child_start.iix
+      && is_block_boundary(func, parent_end)
+      && is_block_boundary(func, child_start)
+    {
+      continue;
+    }
+
+    let vreg = intervals.vreg(interval.id);
+
+    match location {
+      Location::None => panic!("interval has no location after regalloc!"),
+
+      Location::Reg(rreg) => {
+        // Reconnect with the parent location, by adding a move if needed, unless
+        // it's a new definition.
+        let mut start = intervals.start(interval.id, &fragments);
+        let next_use = match find_next_use_after(
+          intervals,
+          interval.id,
+          start,
+          reg_uses,
+          fragments,
+        ) {
+          Some(u) => u,
+          // XXX is this correct?
+          None => continue,
+        };
+
+        if next_use.pt == Point::Use && !is_block_boundary(func, start) {
+          let at_inst = match start.pt {
+            Point::Def => {
+              start.pt = Point::Spill;
+              start
+            }
+            Point::Use => {
+              start.pt = Point::Reload;
+              start
+            }
+            _ => unreachable!(),
+          };
+
+          match intervals.location(parent_id) {
+            Location::None => unreachable!(),
+
+            Location::Reg(from_rreg) => {
+              if from_rreg != rreg {
+                trace!(
+                  "inblock fixup: {:?} gen move from {:?} to {:?} at {:?}",
+                  interval.id,
+                  from_rreg,
+                  rreg,
+                  at_inst
+                );
+                parallel_move_map
+                  .entry(at_inst)
+                  .or_insert(Vec::new())
+                  .push(MoveOp::new_move(from_rreg, rreg, vreg));
+              }
+            }
+
+            Location::Stack(spill) => {
+              trace!(
+                "inblock fixup: {:?} gen reload from {:?} to {:?} at {:?}",
+                interval.id,
+                spill,
+                rreg,
+                at_inst
+              );
+              parallel_move_map
+                .entry(at_inst)
+                .or_insert(Vec::new())
+                .push(MoveOp::new_reload(spill, rreg, vreg));
+            }
+          }
+        }
+      }
+
+      Location::Stack(spill) => {
+        // This interval has been spilled (i.e. split). Spill after the last def
+        // or before the last use.
+        let mut at_inst = intervals.end(parent_id, &fragments);
+        at_inst.pt = if at_inst.pt == Point::Use {
+          Point::Reload
+        } else {
+          debug_assert!(at_inst.pt == Point::Def);
+          Point::Spill
+        };
+
+        match intervals.location(parent_id) {
+          Location::None => unreachable!(),
+
+          Location::Reg(rreg) => {
+            trace!(
+              "inblock fixup: {:?} gen spill from {:?} to {:?} at {:?}",
+              interval.id,
+              rreg,
+              spill,
+              at_inst
+            );
+            parallel_move_map
+              .entry(at_inst)
+              .or_insert(Vec::new())
+              .push(MoveOp::new_spill(rreg, spill, vreg));
+          }
+
+          Location::Stack(parent_spill) => {
+            debug_assert_eq!(parent_spill, spill);
+          }
+        }
+      }
+    }
+  }
+
+  for (at_inst, parallel_moves) in parallel_move_map.iter_mut() {
+    let ordered_moves = schedule_moves(parallel_moves);
+    emit_moves(
+      *at_inst,
       ordered_moves,
       &mut memory_moves,
       func,
@@ -1804,7 +1833,7 @@ fn find_cycled_move<'a>(
 
 /// Given a pending list of moves, returns a list of moves ordered in a correct
 /// way, i.e., no move clobbers another one.
-fn schedule_moves(mut pending: Vec<MoveOp>) -> Vec<MoveOp> {
+fn schedule_moves(pending: &mut Vec<MoveOp>) -> Vec<MoveOp> {
   let mut ordered_moves = Vec::new();
 
   let mut num_cycles = 0;
@@ -1822,8 +1851,7 @@ fn schedule_moves(mut pending: Vec<MoveOp>) -> Vec<MoveOp> {
     let mut stack = vec![pm];
 
     while !stack.is_empty() {
-      let blocking_pair =
-        find_blocking_move(&mut pending, stack.last().unwrap());
+      let blocking_pair = find_blocking_move(pending, stack.last().unwrap());
 
       if let Some((blocking_idx, blocking)) = blocking_pair {
         trace!("found blocker: {:?}", blocking);
