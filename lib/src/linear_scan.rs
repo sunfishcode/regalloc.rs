@@ -569,7 +569,6 @@ fn try_allocate_reg<F: Function>(
       best_pos,
       state.func,
       &state.fragments,
-      ModifiedMeans::Def,
     );
 
     // TODO theoretically, this could be anywhere in [last_use, best_pos].
@@ -598,7 +597,6 @@ fn try_allocate_reg<F: Function>(
 /// Extends to the left, that is, "modified" means "used".
 fn find_next_use_after<F: Function>(
   int: &Intervals, id: IntId, pos: InstPoint, func: &F, fragments: &Fragments,
-  extend: ModifiedMeans,
 ) -> Option<InstPoint> {
   trace!("find next use of {} after {:?}", int.display(id, fragments), pos);
   if int.end(id, fragments) < pos {
@@ -621,36 +619,24 @@ fn find_next_use_after<F: Function>(
       if inst_id < pos.iix {
         continue;
       }
+
       let uses = func.get_regs(func.get_insn(inst_id));
-      match extend {
-        ModifiedMeans::Use => {
-          if uses.used.contains(reg) || uses.modified.contains(wreg) {
-            let candidate = InstPoint::new_use(inst_id);
-            // This final comparison takes the side into account.
-            if pos <= candidate && candidate <= frag.last {
-              return Some(candidate);
-            }
-          }
-          if uses.defined.contains(wreg) {
-            let candidate = InstPoint::new_def(inst_id);
-            if pos <= candidate && candidate <= frag.last {
-              return Some(candidate);
-            }
-          }
+
+      let at_use = InstPoint::new_use(inst_id);
+      if pos <= at_use && frag.contains(&at_use) {
+        if uses.used.contains(reg) || uses.modified.contains(wreg) {
+          debug_assert!(int.covers(id, &at_use, fragments));
+          trace!("found next use of {:?} after {:?} at {:?}", id, pos, at_use);
+          return Some(at_use);
         }
-        ModifiedMeans::Def => {
-          if uses.defined.contains(wreg) || uses.modified.contains(wreg) {
-            let candidate = InstPoint::new_def(inst_id);
-            if pos <= candidate && candidate <= frag.last {
-              return Some(candidate);
-            }
-          }
-          if uses.used.contains(reg) {
-            let candidate = InstPoint::new_use(inst_id);
-            if pos <= candidate && candidate <= frag.last {
-              return Some(candidate);
-            }
-          }
+      }
+
+      let at_def = InstPoint::new_def(inst_id);
+      if pos <= at_def && frag.contains(&at_def) {
+        if uses.defined.contains(wreg) || uses.modified.contains(wreg) {
+          debug_assert!(int.covers(id, &at_def, fragments));
+          trace!("found next use of {:?} after {:?} at {:?}", id, pos, at_def);
+          return Some(at_def);
         }
       }
     }
@@ -695,14 +681,9 @@ fn allocate_blocked_reg<F: Function>(
       continue;
     }
     if let Some(reg) = int.location(id).reg() {
-      if let Some(next_use) = find_next_use_after(
-        int,
-        id,
-        start_pos,
-        state.func,
-        &state.fragments,
-        ModifiedMeans::Use,
-      ) {
+      if let Some(next_use) =
+        find_next_use_after(int, id, start_pos, state.func, &state.fragments)
+      {
         if next_use < next_use_pos[reg] {
           next_use_pos[reg] = next_use;
         }
@@ -719,14 +700,9 @@ fn allocate_blocked_reg<F: Function>(
       continue;
     }
     if let Some(reg) = &int.location(id).reg() {
-      if let Some(next_use) = find_next_use_after(
-        int,
-        id,
-        start_pos,
-        state.func,
-        &state.fragments,
-        ModifiedMeans::Use,
-      ) {
+      if let Some(next_use) =
+        find_next_use_after(int, id, start_pos, state.func, &state.fragments)
+      {
         if next_use < next_use_pos[*reg] {
           next_use_pos[*reg] = next_use;
         }
@@ -773,7 +749,6 @@ fn allocate_blocked_reg<F: Function>(
     InstPoint::min_value(),
     state.func,
     &state.fragments,
-    ModifiedMeans::Use,
   )
   .expect("an interval must have uses");
 
@@ -895,113 +870,57 @@ fn allocate_blocked_reg<F: Function>(
   Ok(())
 }
 
-enum ModifiedMeans {
-  Use,
-  Def,
-}
-
 /// Finds the last use of a vreg before a given target, including it in possible
 /// return values.
 /// Extends to the right, that is, modified means "def".
 fn find_last_use_before<F: Function>(
-  int: &Intervals, id: IntId, target: InstPoint, func: &F,
-  fragments: &Fragments, extend: ModifiedMeans,
+  int: &Intervals, id: IntId, pos: InstPoint, func: &F, fragments: &Fragments,
 ) -> InstPoint {
-  trace!("searching last use of {:?} before {:?}", id, target,);
-  debug_assert!(int.start(id, &fragments) <= target);
+  trace!("searching last use of {:?} before {:?}", id, pos,);
+  debug_assert!(int.start(id, &fragments) <= pos);
 
   let reg = int.vreg(id).to_reg();
   let wreg = Writable::from_reg(reg);
 
-  let mut last_use = None;
-  for &i in &int.fragments(id).frag_ixs {
+  for &i in int.fragments(id).frag_ixs.iter().rev() {
     let frag = fragments[i];
-    for inst in frag.first.iix.dotdot(frag.last.iix.plus_one()) {
-      let reg_uses = func.get_regs(func.get_insn(inst));
-      let use_ = match extend {
-        ModifiedMeans::Def => {
-          if reg_uses.defined.contains(wreg) || reg_uses.modified.contains(wreg)
-          {
-            Some(InstPoint::new_def(inst))
-          } else if reg_uses.used.contains(reg) {
-            Some(InstPoint::new_use(inst))
-          } else {
-            None
-          }
-        }
-        ModifiedMeans::Use => {
-          if reg_uses.used.contains(reg) {
-            Some(InstPoint::new_use(inst))
-          } else if reg_uses.defined.contains(wreg)
-            || reg_uses.modified.contains(wreg)
-          {
-            Some(InstPoint::new_def(inst))
-          } else {
-            None
-          }
-        }
-      };
-
-      if let Some(use_) = use_ {
-        if use_ <= target {
-          last_use = Some(use_);
-        } else {
-          break;
-        }
-      }
+    if frag.first > pos {
+      continue;
     }
-  }
-
-  if let Some(ref last_use) = last_use {
-    trace!("last use of {:?} before {:?} found at {:?}", id, target, last_use,);
-  }
-  return last_use.expect("should have found last use");
-
-  /* TODO revisit this code later.
-  // Find the first fragment which could contain candidates, then look
-  // backwards until the beginning.
-
-  let frag_ixs = &state.intervals.fragments(id).frag_ixs;
-
-  let mut start_from = None;
-  for &i in frag_ixs {
-    let frag = state.fragments[i];
-    if frag.contains(&target) || frag.last <= target {
-      start_from = Some(i);
-    } else {
-      break;
-    }
-  }
-
-  let mut start_from = start_from.expect("contradicts first assertion");
-
-  // Look backwards for the last use.
-  let reg = state.intervals.reg(id);
-  loop {
-    let frag = state.fragments[start_from];
 
     let mut inst = frag.last.iix;
     while inst >= frag.first.iix {
-      inst = inst.minus(1);
-      // TODO use the inst->uses cache.
-      let reg_uses = state.func.get_regs(state.func.get_insn(inst));
-      if reg_uses.defined.contains(reg) || reg_uses.modified.contains(reg) {
-        trace!("find_last_use_before: found def {:?}", inst);
-        return InstPoint::new_def(inst);
-      }
-      if reg_uses.used.contains(reg) {
-        trace!("find_last_use_before: found use {:?}", inst);
-        return InstPoint::new_use(inst);
-      }
-    }
+      let reg_uses = func.get_regs(func.get_insn(inst));
 
-    debug_assert!(
-      start_from.get() > 0,
-      "find_last_use_before: should have found use"
-    );
-    start_from = start_from.minus(1);
+      let at_def = InstPoint::new_def(inst);
+      if at_def <= pos && at_def <= frag.last {
+        if reg_uses.defined.contains(wreg) || reg_uses.modified.contains(wreg) {
+          debug_assert!(
+            int.covers(id, &at_def, fragments),
+            "last use must be in interval"
+          );
+          trace!("last use of {:?} before {:?} found at {:?}", id, pos, at_def,);
+          return at_def;
+        }
+      }
+
+      let at_use = InstPoint::new_use(inst);
+      if at_use <= pos && at_use <= frag.last {
+        if reg_uses.used.contains(reg) || reg_uses.modified.contains(wreg) {
+          debug_assert!(
+            int.covers(id, &at_use, fragments),
+            "last use must be in interval"
+          );
+          trace!("last use of {:?} before {:?} found at {:?}", id, pos, at_use,);
+          return at_use;
+        }
+      }
+
+      inst = inst.minus(1);
+    }
   }
-  */
+
+  panic!("should have found last use!");
 }
 
 /// Which strategy should we use when trying to find the best split position?
@@ -1243,7 +1162,6 @@ fn split_and_spill<F: Function>(
     split_pos,
     state.func,
     &state.fragments,
-    ModifiedMeans::Def,
   );
   debug!("split_and_spill: spill between {:?} and {:?}", last_use, split_pos);
 
@@ -1280,7 +1198,6 @@ fn split_and_spill<F: Function>(
     split_pos,
     state.func,
     &state.fragments,
-    ModifiedMeans::Use,
   ) {
     Some(next_use_pos) => {
       // When the next use coincides with the spill position, since this was the
@@ -1590,26 +1507,11 @@ fn resolve_moves<F: Function>(
           start,
           func,
           fragments,
-          ModifiedMeans::Use,
         ) {
           Some(u) => u,
           // XXX is this correct?
           None => continue,
         };
-
-        //let at_inst = prev_pos(start);
-
-        // TODO if this assert fails, then we need to use "last_use" in place of
-        // "at_inst.pt" below.
-        //let last_use = find_last_use_before(
-        //intervals,
-        //interval.id,
-        //start,
-        //func,
-        //fragments,
-        //ModifiedMeans::Use,
-        //);
-        //debug_assert_eq!(prev_pos(last_use), at_inst);
 
         let vreg = intervals.vreg(interval.id);
         if next_use.pt == Point::Use && !is_block_boundary(func, start) {
