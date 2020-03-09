@@ -677,6 +677,12 @@ fn allocate_blocked_reg<F: Function>(
     state.scratches[reg_class as usize],
     InstPoint::max_value(),
   );
+  let mut block_pos = RegisterMapping::with_default(
+    reg_class,
+    reg_universe,
+    state.scratches[reg_class as usize],
+    InstPoint::max_value(),
+  );
 
   trace!(
     "allocate_blocked_reg: searching reg with next use after {:?}",
@@ -688,7 +694,13 @@ fn allocate_blocked_reg<F: Function>(
     if int.reg_class(id) != reg_class {
       continue;
     }
-    if let Some(reg) = int.location(id).reg() {
+    if let Some(reg) = int.fixed_reg(id) {
+      let start = int.start(id, &state.fragments);
+      if start < block_pos[reg] {
+        block_pos[reg] = start;
+      }
+      next_use_pos[reg] = InstPoint::min_value();
+    } else if let Some(reg) = int.location(id).reg() {
       if let Some(next_use) = find_next_use_after(
         int,
         id,
@@ -708,10 +720,19 @@ fn allocate_blocked_reg<F: Function>(
     if int.reg_class(id) != reg_class {
       continue;
     }
-    if int.intersects_with(id, cur_id, &state.fragments).is_none() {
-      continue;
-    }
-    if let Some(reg) = &int.location(id).reg() {
+    let intersect_pos = match int.intersects_with(id, cur_id, &state.fragments)
+    {
+      Some(pos) => pos,
+      None => continue,
+    };
+    if let Some(reg) = int.fixed_reg(id) {
+      if intersect_pos < block_pos[reg] {
+        block_pos[reg] = intersect_pos;
+      }
+      if intersect_pos < next_use_pos[reg] {
+        next_use_pos[reg] = intersect_pos;
+      }
+    } else if let Some(reg) = &int.location(id).reg() {
       if let Some(next_use) = find_next_use_after(
         int,
         id,
@@ -773,7 +794,7 @@ fn allocate_blocked_reg<F: Function>(
     first_use, next_use_pos[best_reg]
   );
 
-  if first_use == next_use_pos[best_reg] {
+  if first_use >= next_use_pos[best_reg] {
     // The register is already taken at this position, there's nothing much we
     // can do.
     return Err("running out of registers".into());
@@ -790,47 +811,12 @@ fn allocate_blocked_reg<F: Function>(
     // Spill intervals that currently block the selected register.
     state.intervals.set_reg(cur_id, best_reg);
 
-    // Check that there's no interference with a fixed interval, and if so split
-    // at the intersection.
-    {
-      let mut block_pos = InstPoint::max_value();
-
-      for &id in &state.active {
-        if state.intervals.reg_class(id) != reg_class {
-          continue;
-        }
-        if let Some(reg) = state.intervals.fixed_reg(id) {
-          if reg == best_reg {
-            block_pos = InstPoint::min_value();
-            // TODO this break assumes there's only one fixed interval per real
-            // register. Check this assumption.
-            //break;
-          }
-        }
-      }
-
-      for &id in &state.inactive {
-        if state.intervals.reg_class(id) != reg_class {
-          continue;
-        }
-        if let Some(reg) = state.intervals.fixed_reg(id) {
-          if reg.get_index() == best_reg.get_index() {
-            if let Some(intersect_pos) =
-              state.intervals.intersects_with(id, cur_id, &state.fragments)
-            {
-              if intersect_pos < block_pos {
-                block_pos = intersect_pos;
-              }
-            }
-          }
-        }
-      }
-
-      if block_pos < state.intervals.end(cur_id, &state.fragments) {
-        debug!("allocate_blocked_reg: fixed conflict! blocked at {:?}, while ending at {:?}",
-          block_pos, state.intervals.end(cur_id, &state.fragments));
-        split_and_spill(state, cur_id, block_pos);
-      }
+    // If there's an interference with a fixed interval, split at the
+    // intersection.
+    if block_pos[best_reg] < state.intervals.end(cur_id, &state.fragments) {
+      debug!("allocate_blocked_reg: fixed conflict! blocked at {:?}, while ending at {:?}",
+          block_pos[best_reg], state.intervals.end(cur_id, &state.fragments));
+      split_and_spill(state, cur_id, block_pos[best_reg]);
     }
 
     for &id in &state.active {

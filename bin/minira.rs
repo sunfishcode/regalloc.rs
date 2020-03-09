@@ -629,3 +629,8 @@ fn lsra_stmt_repeat() {
 fn any_use_modified() {
   test_utils::check_bt("use_mod", 1, 0);
 }
+
+#[test]
+fn lsra_blocked_fixed() {
+  test_utils::check_lsra("blocked_fixed", 5, 2);
+}
