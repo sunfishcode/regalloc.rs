@@ -376,9 +376,12 @@ impl<'a, F: Function> State<'a, F> {
     // Useful for debugging.
     let optimal_split_strategy = match env::var("SPLIT") {
       Ok(s) => match s.as_str() {
-        "to" => OptimalSplitStrategy::To,
+        "t" | "to" => OptimalSplitStrategy::To,
         "n" => OptimalSplitStrategy::NextFrom,
         "nn" => OptimalSplitStrategy::NextNextFrom,
+        "p" => OptimalSplitStrategy::PrevTo,
+        "pp" => OptimalSplitStrategy::PrevPrevTo,
+        "m" | "mid" => OptimalSplitStrategy::Mid,
         _ => OptimalSplitStrategy::From,
       },
       Err(_) => OptimalSplitStrategy::From,
@@ -932,6 +935,9 @@ enum OptimalSplitStrategy {
   To,
   NextFrom,
   NextNextFrom,
+  PrevTo,
+  PrevPrevTo,
+  Mid,
 }
 
 /// Finds an optimal split position, whenever we're given a range of possible
@@ -971,6 +977,25 @@ fn find_optimal_split_pos<F: Function>(
       }
     }
     OptimalSplitStrategy::From => {}
+    OptimalSplitStrategy::PrevTo => {
+      let pos = prev_pos(to);
+      if pos >= from {
+        return pos;
+      }
+    }
+    OptimalSplitStrategy::PrevPrevTo => {
+      let pos = prev_pos(prev_pos(to));
+      if pos >= from {
+        return pos;
+      }
+    }
+    OptimalSplitStrategy::Mid => {
+      let pos =
+        InstPoint::new_use(InstIx::new((from.iix.get() + to.iix.get()) / 2));
+      if from <= pos && pos <= to {
+        return pos;
+      }
+    }
   }
 
   from
