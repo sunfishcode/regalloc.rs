@@ -580,17 +580,16 @@ fn try_allocate_reg<F: Function>(
   if state.intervals.end(id, &state.fragments) >= best_pos {
     // Partial solution: the register is available until best_pos, and is
     // unavailable later. It must be split before the best position.
-    let last_use = find_last_use_before(
+    let split_pos = match find_last_use_before(
       &state.intervals,
       id,
       best_pos,
       &state.reg_uses,
       &state.fragments,
-    );
-
-    // TODO theoretically, this could be anywhere in [last_use, best_pos].
-    let split_pos = last_use;
-    //let split_pos = find_optimal_split_pos(state, id, last_use, best_pos).unwrap();
+    ) {
+      Some(last_use) => last_use,
+      None => best_pos,
+    };
 
     if split_pos <= state.intervals.start(id, &state.fragments) {
       debug!("try_allocate_reg: partial cover: nowhere to split");
@@ -875,7 +874,7 @@ fn allocate_blocked_reg<F: Function>(
 fn find_last_use_before(
   int: &Intervals, id: IntId, pos: InstPoint, reg_uses: &RegUses,
   fragments: &Fragments,
-) -> InstPoint {
+) -> Option<InstPoint> {
   trace!("searching last use of {:?} before {:?}", id, pos,);
   debug_assert!(int.start(id, &fragments) <= pos);
 
@@ -899,7 +898,7 @@ fn find_last_use_before(
             "last use must be in interval"
           );
           trace!("last use of {:?} before {:?} found at {:?}", id, pos, at_def,);
-          return at_def;
+          return Some(at_def);
         }
       }
 
@@ -911,7 +910,7 @@ fn find_last_use_before(
             "last use must be in interval"
           );
           trace!("last use of {:?} before {:?} found at {:?}", id, pos, at_use,);
-          return at_use;
+          return Some(at_use);
         }
       }
 
@@ -919,7 +918,7 @@ fn find_last_use_before(
     }
   }
 
-  panic!("should have found last use!");
+  None
 }
 
 /// Which strategy should we use when trying to find the best split position?
@@ -1186,7 +1185,8 @@ fn split_and_spill<F: Function>(
     split_pos,
     &state.reg_uses,
     &state.fragments,
-  );
+  )
+  .expect("should have last use for split_and_spill");
   debug!("split_and_spill: spill between {:?} and {:?}", last_use, split_pos);
 
   let optimal_pos =

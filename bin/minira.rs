@@ -670,3 +670,7 @@ fn lsra_parallel_reloads() {
 fn lsra_flush_block_fixups() {
   test_utils::check_lsra("lsra_flush_block_fixups", 5, 2);
 }
+#[test]
+fn lsra_split_unused() {
+  test_utils::check_lsra("lsra_split_unused", 5, 2);
+}
