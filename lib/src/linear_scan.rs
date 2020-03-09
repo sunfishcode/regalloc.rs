@@ -1481,12 +1481,8 @@ fn resolve_moves<F: Function>(
     let parent_end = intervals.end(parent_id, fragments);
     let child_start = intervals.start(interval.id, fragments);
 
-    // This is a move between blocks, and should have been handled as such.
-    if is_block_end(func, parent_end) && is_block_start(func, child_start)
-    //if parent_end.iix.plus(1) == child_start.iix
-    //&& is_block_boundary(func, parent_end)
-    //&& is_block_boundary(func, child_start)
-    {
+    if is_block_end(func, parent_end) && is_block_start(func, child_start) {
+      // This is a move between blocks, and should be handled as such.
       continue;
     }
 
@@ -1497,11 +1493,10 @@ fn resolve_moves<F: Function>(
 
       Location::Reg(rreg) => {
         // Reconnect with the parent location, by adding a move if needed.
-        let mut start = intervals.start(interval.id, &fragments);
         match find_next_use_after(
           intervals,
           interval.id,
-          start,
+          child_start,
           reg_uses,
           fragments,
         ) {
@@ -1515,17 +1510,16 @@ fn resolve_moves<F: Function>(
           None => continue,
         };
 
-        let at_inst = match start.pt {
-          Point::Def => {
-            start.pt = Point::Spill;
-            start
-          }
+        let mut at_inst = child_start;
+        match at_inst.pt {
           Point::Use => {
-            start.pt = Point::Reload;
-            start
+            at_inst.pt = Point::Reload;
+          }
+          Point::Def => {
+            at_inst.pt = Point::Spill;
           }
           _ => unreachable!(),
-        };
+        }
         let entry = &mut parallel_move_map.entry(at_inst).or_insert(Vec::new());
 
         match intervals.location(parent_id) {
