@@ -1788,13 +1788,25 @@ impl MoveOperand {
   }
 }
 
-#[derive(Debug)]
 struct MoveOp {
   from: MoveOperand,
   to: MoveOperand,
   vreg: VirtualReg,
   cycle_begin: Option<usize>,
   cycle_end: Option<usize>,
+}
+
+impl fmt::Debug for MoveOp {
+  fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    write!(fmt, "{:?}: {:?} -> {:?}", self.vreg, self.from, self.to)?;
+    if let Some(ref begin) = self.cycle_begin {
+      write!(fmt, ", start of cycle #{}", begin)?;
+    }
+    if let Some(ref end) = self.cycle_end {
+      write!(fmt, ", end of cycle #{}", end)?;
+    }
+    Ok(())
+  }
 }
 
 impl MoveOp {
