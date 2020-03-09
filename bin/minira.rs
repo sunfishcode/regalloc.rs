@@ -634,3 +634,7 @@ fn any_use_modified() {
 fn lsra_blocked_fixed() {
   test_utils::check_lsra("blocked_fixed", 5, 2);
 }
+#[test]
+fn lsra_multi_split() {
+  test_utils::check_lsra("lsra_multi_split", 5, 0);
+}

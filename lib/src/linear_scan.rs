@@ -108,6 +108,7 @@ struct LiveInterval {
   kind: LiveIntervalKind,
   /// Parent interval in the split tree.
   parent: Option<IntId>,
+  child: Option<IntId>,
   /// Location assigned to this live interval.
   location: Location,
 }
@@ -166,6 +167,7 @@ impl Intervals {
         id: IntId(index),
         kind,
         parent: None,
+        child: None,
         location: Location::None,
       })
       .collect();
@@ -329,6 +331,13 @@ impl Intervals {
   fn push_interval(&mut self, int: LiveInterval) {
     debug_assert!(int.id.0 == self.data.len());
     self.data.push(int);
+  }
+  fn set_child(&mut self, int_id: IntId, child_id: IntId) {
+    if let Some(prev_child) = self.data[int_id.0].child.clone() {
+      self.data[child_id.0].child = Some(prev_child);
+      self.data[prev_child.0].parent = Some(child_id);
+    }
+    self.data[int_id.0].child = Some(child_id);
   }
 }
 
@@ -1121,9 +1130,12 @@ fn split<F: Function>(
     id: child_id,
     kind: LiveIntervalKind::Virtual(vreg_ix),
     parent: Some(id),
+    child: None,
     location: Location::None,
   };
   state.intervals.push_interval(child_int);
+
+  state.intervals.set_child(id, child_id);
 
   debug!("split results:");
   debug!("- {}", state.intervals.display(id, &state.fragments));
