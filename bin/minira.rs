@@ -411,7 +411,10 @@ fn lsra_fill_then_sum() {
 fn bt_ssort() {
   test_utils::check_bt("ssort", 8, 8);
 }
-// TODO add lsra for ssort_3.
+#[test]
+fn lsra_ssort_3() {
+  test_utils::check_lsra("ssort", 3, 0);
+}
 #[test]
 fn lsra_ssort_4() {
   test_utils::check_lsra("ssort", 4, 0);
@@ -501,7 +504,23 @@ fn lsra_qsort_cant() {
   assert!(test_utils::run_lsra("qsort", 2, 0).is_err());
   assert!(test_utils::run_lsra("qsort", 3, 0).is_err());
 }
-// TODO add lsra qsort from 4 here.
+#[test]
+fn lsra_qsort_4() {
+  test_utils::check_lsra("qsort", 4, 0);
+}
+// TODO Have LSRA pass these tests.
+//#[test]
+//fn lsra_qsort_5() {
+//test_utils::check_lsra("qsort", 5, 0);
+//}
+//#[test]
+//fn lsra_qsort_6() {
+//test_utils::check_lsra("qsort", 6, 0);
+//}
+//#[test]
+//fn lsra_qsort_7() {
+//test_utils::check_lsra("qsort", 7, 0);
+//}
 #[test]
 fn lsra_qsort_8() {
   test_utils::check_lsra("qsort", 8, 0);
@@ -569,10 +588,7 @@ fn bt_ssort_2a() {
 fn lsra_2a_ssort() {
   assert!(test_utils::run_lsra("ssort_2a", 1, 0).is_err());
   assert!(test_utils::run_lsra("ssort_2a", 2, 0).is_err());
-  // TODO use loop_lsra starting from 3 here.
-  for i in 6..10 {
-    test_utils::check_lsra("ssort_2a", i, 0);
-  }
+  test_utils::loop_lsra("ssort_2a", 3);
 }
 
 // Requires 1 GPR and 2 FPUs at least.
