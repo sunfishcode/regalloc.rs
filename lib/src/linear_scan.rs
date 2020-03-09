@@ -1589,7 +1589,7 @@ fn resolve_moves<F: Function>(
     }
   }
 
-  // Flush the memory moves caused by block fixups.
+  // Flush the memory moves caused by in-block fixups.
   for (at_inst, mut parallel_moves) in parallel_reloads {
     let ordered_moves = schedule_moves(&mut parallel_moves);
     let insts = emit_moves(ordered_moves, func, spill_slot, scratches_by_rc);
@@ -1756,31 +1756,31 @@ fn resolve_moves<F: Function>(
         };
       }
     }
-  }
-  debug!("");
 
-  // Flush the memory moves caused by block fixups.
-  for (at_inst, parallel_moves) in parallel_move_map.iter_mut() {
-    let ordered_moves = schedule_moves(&mut parallel_moves.0);
-    let mut insts =
-      emit_moves(ordered_moves, func, spill_slot, scratches_by_rc);
+    // Flush the memory moves caused by block fixups for this block.
+    for (at_inst, parallel_moves) in parallel_move_map.iter_mut() {
+      let ordered_moves = schedule_moves(&mut parallel_moves.0);
+      let mut insts =
+        emit_moves(ordered_moves, func, spill_slot, scratches_by_rc);
 
-    // If at_inst pointed to a block start, then insert block fixups *before*
-    // inblock fixups;
-    // otherwise it pointed to a block end, then insert block fixups *after*
-    // inblock fixups.
-    let mut entry = memory_moves.entry(*at_inst).or_insert(Vec::new());
-    match parallel_moves.1 {
-      BlockPos::Start => {
-        insts.append(&mut entry);
-        *entry = insts;
-      }
-      BlockPos::End => {
-        entry.append(&mut insts);
+      // If at_inst pointed to a block start, then insert block fixups *before*
+      // inblock fixups;
+      // otherwise it pointed to a block end, then insert block fixups *after*
+      // inblock fixups.
+      let mut entry = memory_moves.entry(*at_inst).or_insert(Vec::new());
+      match parallel_moves.1 {
+        BlockPos::Start => {
+          insts.append(&mut entry);
+          *entry = insts;
+        }
+        BlockPos::End => {
+          entry.append(&mut insts);
+        }
       }
     }
+    parallel_move_map.clear();
   }
-  parallel_move_map.clear();
+  debug!("");
 
   let mut insts_and_points = InstsAndPoints::new();
   for (at, insts) in memory_moves {

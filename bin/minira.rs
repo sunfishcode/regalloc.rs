@@ -513,14 +513,14 @@ fn lsra_qsort_4() {
 //fn lsra_qsort_5() {
 //test_utils::check_lsra("qsort", 5, 0);
 //}
-//#[test]
-//fn lsra_qsort_6() {
-//test_utils::check_lsra("qsort", 6, 0);
-//}
-//#[test]
-//fn lsra_qsort_7() {
-//test_utils::check_lsra("qsort", 7, 0);
-//}
+#[test]
+fn lsra_qsort_6() {
+  test_utils::check_lsra("qsort", 6, 0);
+}
+#[test]
+fn lsra_qsort_7() {
+  test_utils::check_lsra("qsort", 7, 0);
+}
 #[test]
 fn lsra_qsort_8() {
   test_utils::check_lsra("qsort", 8, 0);
@@ -665,4 +665,8 @@ fn lsra_inblock_fixup_pos() {
 #[test]
 fn lsra_parallel_reloads() {
   test_utils::check_lsra("lsra_parallel_reloads", 5, 2);
+}
+#[test]
+fn lsra_flush_block_fixups() {
+  test_utils::check_lsra("lsra_flush_block_fixups", 5, 2);
 }
