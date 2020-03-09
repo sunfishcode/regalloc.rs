@@ -1536,7 +1536,7 @@ fn resolve_moves<F: Function>(
           Location::Reg(from_rreg) => {
             if from_rreg != rreg {
               trace!(
-                "inblock fixup: {:?} gen move from {:?} to {:?} at {:?}",
+                "inblock fixup: {:?} move {:?} -> {:?} at {:?}",
                 interval.id,
                 from_rreg,
                 rreg,
@@ -1548,7 +1548,7 @@ fn resolve_moves<F: Function>(
 
           Location::Stack(spill) => {
             trace!(
-              "inblock fixup: {:?} gen reload from {:?} to {:?} at {:?}",
+              "inblock fixup: {:?} reload {:?} -> {:?} at {:?}",
               interval.id,
               spill,
               rreg,
@@ -1575,7 +1575,7 @@ fn resolve_moves<F: Function>(
 
           Location::Reg(rreg) => {
             trace!(
-              "inblock fixup: {:?} gen spill from {:?} to {:?} at {:?}",
+              "inblock fixup: {:?} spill {:?} -> {:?} at {:?}",
               interval.id,
               rreg,
               spill,
@@ -1629,8 +1629,6 @@ fn resolve_moves<F: Function>(
       for &reg in liveouts[block].iter() {
         let vreg =
           if let Some(vreg) = reg.as_virtual_reg() { vreg } else { continue };
-
-        trace!("considering boundary {:?} -> {:?} for {:?}", block, succ, vreg);
 
         let (succ_first_inst, succ_id) = {
           let first_inst = InstPoint::new_use(func.block_insns(succ).first());
@@ -1693,7 +1691,8 @@ fn resolve_moves<F: Function>(
               continue;
             }
             trace!(
-              "boundary fixup: gen move at {:?} for {:?} between {:?} and {:?}",
+              "boundary fixup: move {:?} -> {:?} at {:?} for {:?} between {:?} and {:?}",
+              cur_rreg, succ_rreg,
               at_inst,
               vreg,
               block,
@@ -1704,7 +1703,8 @@ fn resolve_moves<F: Function>(
 
           (Location::Reg(cur_rreg), Location::Stack(spillslot)) => {
             trace!(
-              "boundary fixup: gen spill at {:?} for {:?} between {:?} and {:?}",
+              "boundary fixup: spill {:?} -> {:?} at {:?} for {:?} between {:?} and {:?}",
+              cur_rreg, spillslot, 
               at_inst,
               vreg,
               block,
@@ -1715,7 +1715,8 @@ fn resolve_moves<F: Function>(
 
           (Location::Stack(spillslot), Location::Reg(rreg)) => {
             trace!(
-              "boundary fixup: gen reload at {:?} for {:?} between {:?} and {:?}",
+              "boundary fixup: reload {:?} -> {:?} at {:?} for {:?} between {:?} and {:?}",
+              spillslot, rreg, 
               at_inst,
               vreg,
               block,
