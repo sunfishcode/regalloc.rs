@@ -1463,7 +1463,6 @@ fn resolve_moves<F: Function>(
   scratches_by_rc: &[Option<RealReg>],
 ) -> InstsAndPoints<F> {
   let mut memory_moves = HashMap::default();
-  let mut parallel_move_map = HashMap::default();
 
   debug!("resolve_moves");
 
@@ -1520,7 +1519,7 @@ fn resolve_moves<F: Function>(
           }
           _ => unreachable!(),
         }
-        let entry = &mut parallel_move_map.entry(at_inst).or_insert(Vec::new());
+        let entry = memory_moves.entry(at_inst).or_insert(Vec::new());
 
         match intervals.location(parent_id) {
           Location::None => unreachable!(),
@@ -1534,7 +1533,8 @@ fn resolve_moves<F: Function>(
                 rreg,
                 at_inst
               );
-              entry.push(MoveOp::new_move(from_rreg, rreg, vreg));
+              entry
+                .push(MoveOp::new_move(from_rreg, rreg, vreg).gen_inst(func));
             }
           }
 
@@ -1546,7 +1546,7 @@ fn resolve_moves<F: Function>(
               rreg,
               at_inst
             );
-            entry.push(MoveOp::new_reload(spill, rreg, vreg));
+            entry.push(MoveOp::new_reload(spill, rreg, vreg).gen_inst(func));
           }
         }
       }
@@ -1573,10 +1573,10 @@ fn resolve_moves<F: Function>(
               spill,
               at_inst
             );
-            parallel_move_map
+            memory_moves
               .entry(at_inst)
               .or_insert(Vec::new())
-              .push(MoveOp::new_spill(rreg, spill, vreg));
+              .push(MoveOp::new_spill(rreg, spill, vreg).gen_inst(func));
           }
 
           Location::Stack(parent_spill) => {
@@ -1586,14 +1586,6 @@ fn resolve_moves<F: Function>(
       }
     }
   }
-
-  for (at_inst, parallel_moves) in parallel_move_map.iter_mut() {
-    let ordered_moves = schedule_moves(parallel_moves);
-    let mut insts =
-      emit_moves(ordered_moves, func, spill_slot, scratches_by_rc);
-    memory_moves.entry(*at_inst).or_insert(Vec::new()).append(&mut insts);
-  }
-  parallel_move_map.clear();
 
   let mut parallel_move_map = HashMap::default();
   enum BlockPos {

@@ -642,3 +642,7 @@ fn lsra_multi_split() {
 fn lsra_double_succ() {
   test_utils::check_lsra("lsra_double_succ", 5, 2);
 }
+#[test]
+fn lsra_inblock_fixup_pos() {
+  test_utils::check_lsra("lsra_inblock_fixup_pos", 5, 2);
+}
