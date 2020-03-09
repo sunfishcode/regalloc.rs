@@ -646,3 +646,7 @@ fn lsra_double_succ() {
 fn lsra_inblock_fixup_pos() {
   test_utils::check_lsra("lsra_inblock_fixup_pos", 5, 2);
 }
+#[test]
+fn lsra_parallel_reloads() {
+  test_utils::check_lsra("lsra_parallel_reloads", 5, 2);
+}

@@ -1464,6 +1464,9 @@ fn resolve_moves<F: Function>(
 ) -> InstsAndPoints<F> {
   let mut memory_moves = HashMap::default();
 
+  let mut parallel_reloads = HashMap::default();
+  let mut spills = HashMap::default();
+
   debug!("resolve_moves");
 
   for &interval in virtual_intervals {
@@ -1519,7 +1522,7 @@ fn resolve_moves<F: Function>(
           }
           _ => unreachable!(),
         }
-        let entry = memory_moves.entry(at_inst).or_insert(Vec::new());
+        let entry = parallel_reloads.entry(at_inst).or_insert(Vec::new());
 
         match intervals.location(parent_id) {
           Location::None => unreachable!(),
@@ -1533,8 +1536,7 @@ fn resolve_moves<F: Function>(
                 rreg,
                 at_inst
               );
-              entry
-                .push(MoveOp::new_move(from_rreg, rreg, vreg).gen_inst(func));
+              entry.push(MoveOp::new_move(from_rreg, rreg, vreg));
             }
           }
 
@@ -1546,7 +1548,7 @@ fn resolve_moves<F: Function>(
               rreg,
               at_inst
             );
-            entry.push(MoveOp::new_reload(spill, rreg, vreg).gen_inst(func));
+            entry.push(MoveOp::new_reload(spill, rreg, vreg));
           }
         }
       }
@@ -1573,10 +1575,10 @@ fn resolve_moves<F: Function>(
               spill,
               at_inst
             );
-            memory_moves
+            spills
               .entry(at_inst)
               .or_insert(Vec::new())
-              .push(MoveOp::new_spill(rreg, spill, vreg).gen_inst(func));
+              .push(func.gen_spill(spill, rreg, vreg));
           }
 
           Location::Stack(parent_spill) => {
@@ -1585,6 +1587,16 @@ fn resolve_moves<F: Function>(
         }
       }
     }
+  }
+
+  // Flush the memory moves caused by block fixups.
+  for (at_inst, mut parallel_moves) in parallel_reloads {
+    let ordered_moves = schedule_moves(&mut parallel_moves);
+    let insts = emit_moves(ordered_moves, func, spill_slot, scratches_by_rc);
+    memory_moves.insert(at_inst, insts);
+  }
+  for (at_inst, mut spills) in spills {
+    memory_moves.entry(at_inst).or_insert(Vec::new()).append(&mut spills);
   }
 
   let mut parallel_move_map = HashMap::default();
