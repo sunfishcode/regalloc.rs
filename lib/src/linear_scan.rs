@@ -1603,6 +1603,12 @@ fn resolve_moves<F: Function>(
   }
   parallel_move_map.clear();
 
+  let mut parallel_move_map = HashMap::default();
+  enum BlockPos {
+    Start,
+    End,
+  }
+
   // Figure the sequence of parallel moves to insert at block boundaries:
   // - for each block
   //  - for each liveout vreg in this block
@@ -1671,19 +1677,19 @@ fn resolve_moves<F: Function>(
           continue;
         }
 
-        let at_inst = if cur_has_one_succ {
+        let (at_inst, block_pos) = if cur_has_one_succ {
           let mut pos = cur_last_inst;
           // Before the control flow instruction.
           pos.pt = Point::Reload;
-          pos
+          (pos, BlockPos::End)
         } else {
           let mut pos = succ_first_inst;
           pos.pt = Point::Reload;
-          pos
+          (pos, BlockPos::Start)
         };
 
         let pending_moves =
-          parallel_move_map.entry(at_inst).or_insert(Vec::new());
+          parallel_move_map.entry(at_inst).or_insert((Vec::new(), block_pos));
 
         match (intervals.location(cur_id), intervals.location(succ_id)) {
           (Location::Reg(cur_rreg), Location::Reg(succ_rreg)) => {
@@ -1692,37 +1698,40 @@ fn resolve_moves<F: Function>(
             }
             trace!(
               "boundary fixup: move {:?} -> {:?} at {:?} for {:?} between {:?} and {:?}",
-              cur_rreg, succ_rreg,
+              cur_rreg,
+              succ_rreg,
               at_inst,
               vreg,
               block,
               succ
             );
-            pending_moves.push(MoveOp::new_move(cur_rreg, succ_rreg, vreg));
+            pending_moves.0.push(MoveOp::new_move(cur_rreg, succ_rreg, vreg));
           }
 
           (Location::Reg(cur_rreg), Location::Stack(spillslot)) => {
             trace!(
               "boundary fixup: spill {:?} -> {:?} at {:?} for {:?} between {:?} and {:?}",
-              cur_rreg, spillslot, 
+              cur_rreg,
+              spillslot,
               at_inst,
               vreg,
               block,
               succ
             );
-            pending_moves.push(MoveOp::new_spill(cur_rreg, spillslot, vreg));
+            pending_moves.0.push(MoveOp::new_spill(cur_rreg, spillslot, vreg));
           }
 
           (Location::Stack(spillslot), Location::Reg(rreg)) => {
             trace!(
               "boundary fixup: reload {:?} -> {:?} at {:?} for {:?} between {:?} and {:?}",
-              spillslot, rreg, 
+              spillslot,
+              rreg,
               at_inst,
               vreg,
               block,
               succ
             );
-            pending_moves.push(MoveOp::new_reload(spillslot, rreg, vreg));
+            pending_moves.0.push(MoveOp::new_reload(spillslot, rreg, vreg));
           }
 
           (
@@ -1750,19 +1759,23 @@ fn resolve_moves<F: Function>(
 
   // Flush the memory moves caused by block fixups.
   for (at_inst, parallel_moves) in parallel_move_map.iter_mut() {
-    let ordered_moves = schedule_moves(parallel_moves);
+    let ordered_moves = schedule_moves(&mut parallel_moves.0);
     let mut insts =
       emit_moves(ordered_moves, func, spill_slot, scratches_by_rc);
+
     // If at_inst pointed to a block start, then insert block fixups *before*
     // inblock fixups;
     // otherwise it pointed to a block end, then insert block fixups *after*
     // inblock fixups.
     let mut entry = memory_moves.entry(*at_inst).or_insert(Vec::new());
-    if is_block_start(func, at_inst.at_use()) {
-      insts.append(&mut entry);
-      *entry = insts;
-    } else {
-      entry.append(&mut insts);
+    match parallel_moves.1 {
+      BlockPos::Start => {
+        insts.append(&mut entry);
+        *entry = insts;
+      }
+      BlockPos::End => {
+        entry.append(&mut insts);
+      }
     }
   }
   parallel_move_map.clear();
