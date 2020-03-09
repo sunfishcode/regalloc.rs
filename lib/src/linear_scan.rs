@@ -16,7 +16,7 @@
 // - (correctness) use sanitized reg uses in lieu of reg uses.
 
 use log::{debug, trace};
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use std::cmp::Ordering;
 use std::env;
@@ -1617,8 +1617,10 @@ fn resolve_moves<F: Function>(
   // Once that's done:
   // - resolve cycles in the pending moves
   // - generate real moves from the pending moves.
+  let mut seen_successors = HashSet::default();
   for block in func.blocks() {
     let successors = func.block_succs(block);
+    seen_successors.clear();
 
     // Where to insert the fixup move, if needed? If there's more than one
     // successor to the current block, inserting in the current block will
@@ -1630,6 +1632,10 @@ fn resolve_moves<F: Function>(
     let cur_has_one_succ = successors.len() == 1;
 
     for succ in successors {
+      if !seen_successors.insert(succ) {
+        continue;
+      }
+
       for &reg in liveouts[block].iter() {
         let vreg =
           if let Some(vreg) = reg.as_virtual_reg() { vreg } else { continue };

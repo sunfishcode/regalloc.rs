@@ -638,3 +638,7 @@ fn lsra_blocked_fixed() {
 fn lsra_multi_split() {
   test_utils::check_lsra("lsra_multi_split", 5, 0);
 }
+#[test]
+fn lsra_double_succ() {
+  test_utils::check_lsra("lsra_double_succ", 5, 2);
+}
