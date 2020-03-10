@@ -740,7 +740,7 @@ fn allocate_blocked_reg<F: Function>(
       if intersect_pos < next_use_pos[reg] {
         next_use_pos[reg] = intersect_pos;
       }
-    } else if let Some(reg) = &int.location(id).reg() {
+    } else if let Some(reg) = int.location(id).reg() {
       if let Some(next_use) = find_next_use_after(
         int,
         id,
@@ -748,8 +748,8 @@ fn allocate_blocked_reg<F: Function>(
         &state.reg_uses,
         &state.fragments,
       ) {
-        if next_use < next_use_pos[*reg] {
-          next_use_pos[*reg] = next_use;
+        if next_use < next_use_pos[reg] {
+          next_use_pos[reg] = next_use;
         }
       }
     }
@@ -802,7 +802,7 @@ fn allocate_blocked_reg<F: Function>(
     first_use, next_use_pos[best_reg]
   );
 
-  if first_use >= next_use_pos[best_reg] {
+  if first_use == next_use_pos[best_reg] {
     // The register is already taken at this position, there's nothing much we
     // can do.
     return Err("running out of registers".into());
@@ -1204,12 +1204,6 @@ fn split_and_spill<F: Function>(
     &state.fragments,
   ) {
     Some(next_use_pos) => {
-      // When the next use coincides with the spill position, since this was the
-      // register with the furthest next use, and we wanted to split it strictly
-      // before its next use, then we can't actually split further.
-      //if child_start == next_use_pos {
-      //return Err("ran out of registers".into());
-      //}
       debug!("split spilled interval before next use @ {:?}", next_use_pos);
       let child = split(state, child, next_use_pos);
       state.insert_unhandled(child);
@@ -1508,8 +1502,7 @@ fn resolve_moves<F: Function>(
               continue;
             }
           }
-          // XXX is this correct?
-          None => continue,
+          None => {},
         };
 
         let mut at_inst = child_start;
