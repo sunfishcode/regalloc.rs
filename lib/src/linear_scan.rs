@@ -1589,7 +1589,11 @@ fn resolve_moves<F: Function>(
     }
   }
 
-  // Flush the memory moves caused by in-block fixups.
+  // Flush the memory moves caused by in-block fixups. Conceptually, the spills
+  // must happen after the right locations have been set, that is, after the
+  // reloads. Reloads may include several moves that must happen in parallel
+  // (e.g. if two real regs must be swapped), so process them first. Once all
+  // the parallel assignments have been done, push forward all the spills.
   for (at_inst, mut parallel_moves) in parallel_reloads {
     let ordered_moves = schedule_moves(&mut parallel_moves);
     let insts = emit_moves(ordered_moves, func, spill_slot, scratches_by_rc);
