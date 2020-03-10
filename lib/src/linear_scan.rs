@@ -824,7 +824,8 @@ fn allocate_blocked_reg<F: Function>(
     if block_pos[best_reg] < state.intervals.end(cur_id, &state.fragments) {
       debug!("allocate_blocked_reg: fixed conflict! blocked at {:?}, while ending at {:?}",
           block_pos[best_reg], state.intervals.end(cur_id, &state.fragments));
-      split_and_spill(state, cur_id, block_pos[best_reg]);
+      let child = split(state, cur_id, block_pos[best_reg]);
+      state.insert_unhandled(child);
     }
 
     for &id in &state.active {
@@ -1505,7 +1506,7 @@ fn resolve_moves<F: Function>(
           None => {},
         };
 
-        let mut at_inst = child_start;
+        let mut at_inst = parent_end;
         match at_inst.pt {
           Point::Use => {
             at_inst.pt = Point::Reload;
@@ -1568,10 +1569,12 @@ fn resolve_moves<F: Function>(
               spill,
               at_inst
             );
-            spills
+            //spills
+            parallel_reloads
               .entry(at_inst)
               .or_insert(Vec::new())
-              .push(func.gen_spill(spill, rreg, vreg));
+              //.push(func.gen_spill(spill, rreg, vreg));
+              .push(MoveOp::new_spill(rreg, spill, vreg));
           }
 
           Location::Stack(parent_spill) => {
