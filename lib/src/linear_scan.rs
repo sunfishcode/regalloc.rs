@@ -584,7 +584,7 @@ fn try_allocate_reg<F: Function>(
     best_reg, best_pos
   );
 
-  if state.intervals.end(id, &state.fragments) >= best_pos {
+  if best_pos <= state.intervals.end(id, &state.fragments) {
     // Partial solution: the register is available until best_pos, and is
     // unavailable later. It must be split before the best position.
     let split_pos = match find_last_use_before(
@@ -595,13 +595,7 @@ fn try_allocate_reg<F: Function>(
       &state.fragments,
     ) {
       Some(last_use) => find_optimal_split_pos(state, id, last_use, best_pos),
-      None => {
-        if state.is_valid_split_pos(id, best_pos) {
-          best_pos
-        } else {
-          prev_pos(best_pos)
-        }
-      }
+      None => best_pos.at_use(),
     };
 
     if split_pos <= state.intervals.start(id, &state.fragments) {
@@ -817,14 +811,11 @@ fn allocate_blocked_reg<F: Function>(
     first_use, next_use_pos[best_reg]
   );
 
-  if first_use == next_use_pos[best_reg] && first_use != InstPoint::max_value()
+  if first_use >= next_use_pos[best_reg] && first_use != InstPoint::max_value()
   {
-    // The register is already taken at this position, there's nothing much we
-    // can do.
-    return Err("running out of registers".into());
-  }
-
-  if first_use > next_use_pos[best_reg] {
+    if state.intervals.start(cur_id, &state.fragments) == first_use {
+      return Err("running out of registers".into());
+    }
     debug!("spill current interval");
     let new_int = split(state, cur_id, first_use, false);
     state.insert_unhandled(new_int);
@@ -837,18 +828,13 @@ fn allocate_blocked_reg<F: Function>(
 
     // If there's an interference with a fixed interval, split at the
     // intersection.
-    if block_pos[best_reg] < state.intervals.end(cur_id, &state.fragments) {
+    if block_pos[best_reg] <= state.intervals.end(cur_id, &state.fragments) {
       debug!("allocate_blocked_reg: fixed conflict! blocked at {:?}, while ending at {:?}",
           block_pos[best_reg], state.intervals.end(cur_id, &state.fragments));
-      let start = next_pos(state.intervals.start(cur_id, &state.fragments));
-      if start == block_pos[best_reg]
-        && !state.is_valid_split_pos(cur_id, start)
-      {
-        // Split and spill as a last measure.
+      let split_pos = block_pos[best_reg].at_use();
+      if first_use == split_pos {
         split_and_spill(state, cur_id, block_pos[best_reg]);
       } else {
-        let split_pos =
-          find_optimal_split_pos(state, cur_id, start, block_pos[best_reg]);
         let child = split(state, cur_id, split_pos, true);
         state.insert_unhandled(child);
       }
@@ -1548,7 +1534,7 @@ fn resolve_moves<F: Function>(
           None => {}
         };
 
-        let mut at_inst = parent_end;
+        let mut at_inst = child_start;
         match at_inst.pt {
           Point::Use => {
             at_inst.pt = Point::Reload;
