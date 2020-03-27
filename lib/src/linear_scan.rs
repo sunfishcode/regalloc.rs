@@ -117,11 +117,23 @@ impl Mention {
 
 type MentionMap = Vec<(InstIx, Mention)>;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Spill {
+  slot: SpillSlot,
+  size: u32,
+}
+
+impl Spill {
+  fn new(slot: SpillSlot, size: u32) -> Self {
+    Self { slot, size }
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Location {
   None,
   Reg(RealReg),
-  Stack(SpillSlot),
+  Stack(Spill),
 }
 
 impl Location {
@@ -137,9 +149,15 @@ impl Location {
       _ => panic!("unwrap_reg called on non-reg location"),
     }
   }
-  fn spill(&self) -> Option<SpillSlot> {
+  fn unwrap_spill(&self) -> Spill {
     match self {
-      Location::Stack(slot) => Some(*slot),
+      Location::Stack(spill) => *(spill),
+      _ => panic!("unwrap_spill called on non-spill location"),
+    }
+  }
+  fn spill_slot(&self) -> Option<SpillSlot> {
+    match self {
+      Location::Stack(spill) => Some(spill.slot),
       _ => None,
     }
   }
@@ -156,7 +174,7 @@ impl fmt::Display for Location {
     match self {
       Location::None => write!(fmt, "none"),
       Location::Reg(reg) => write!(fmt, "{:?}", reg),
-      Location::Stack(slot) => write!(fmt, "{:?}", slot),
+      Location::Stack(spill) => write!(fmt, "{:?}", spill.slot),
     }
   }
 }
@@ -447,11 +465,10 @@ impl Intervals {
     debug_assert!(!int.is_fixed());
     int.location = Location::Reg(reg);
   }
-  fn set_spill(&mut self, int_id: IntId, slot: SpillSlot) {
+  fn set_spill(&mut self, int_id: IntId, spill: Spill) {
     let int = self.get_mut(int_id);
-    debug_assert!(int.location.spill().is_none());
-    debug_assert!(!int.is_fixed());
-    int.location = Location::Stack(slot);
+    debug_assert!(int.location.spill_slot().is_none());
+    int.location = Location::Stack(spill);
   }
   fn push_interval(&mut self, int: LiveInterval) {
     debug_assert!(int.id.0 == self.data.len());
@@ -531,9 +548,11 @@ struct State<'a, F: Function> {
   /// Next available spill slot.
   next_spill_slot: SpillSlot,
 
+  spill_pool: Vec<(InstPoint, Spill)>,
+
   /// Maps given virtual registers to the spill slots they should be assigned
   /// to.
-  spill_map: HashMap<VirtualReg, SpillSlot>,
+  spill_map: HashMap<VirtualReg, Spill>,
 
   mention_map: HashMap<Reg, MentionMap>,
 }
@@ -622,6 +641,7 @@ impl<'a, F: Function> State<'a, F> {
         usize::max_value(),
       )),
       mention_map: build_mention_map(reg_uses),
+      spill_pool: Vec::new(),
     }
   }
 
@@ -669,21 +689,58 @@ impl<'a, F: Function> State<'a, F> {
   fn spill(&mut self, id: IntId) {
     let int = self.intervals.get(id);
     debug_assert!(!int.is_fixed(), "can't split fixed interval");
-    debug_assert!(int.location.spill().is_none(), "already spilled");
+    debug_assert!(int.location.spill_slot().is_none(), "already spilled");
     debug!("spilling {:?}", id);
 
     let vreg = self.intervals.vreg(id);
-    let spill_slot = if let Some(spill_slot) = self.spill_map.get(&vreg) {
-      *spill_slot
+    let spill = if let Some(spill) = self.spill_map.get(&vreg) {
+      *spill
     } else {
       let size_slot = self.func.get_spillslot_size(int.reg_class, vreg);
-      let spill_slot = self.next_spill_slot.round_up(size_slot);
-      self.next_spill_slot = self.next_spill_slot.inc(1);
-      self.spill_map.insert(vreg, spill_slot);
-      spill_slot
+
+      let found = if let Ok(_) = env::var("NOSPILL") {
+        None
+      } else {
+        let mut found = None;
+        for (i, (available_after, free_spill)) in
+          self.spill_pool.iter().enumerate()
+        {
+          if *available_after < int.start && free_spill.size == size_slot {
+            debug!("reuse spill slot {:?}", free_spill);
+            found = Some(i);
+            break;
+          }
+        }
+        found
+      };
+
+      if let Some(found) = found {
+        let (_, spill) = self.spill_pool.remove(found);
+        self.spill_map.insert(vreg, spill);
+        spill
+      } else {
+        let spill_slot = self.next_spill_slot.round_up(size_slot);
+        self.next_spill_slot = self.next_spill_slot.inc(1);
+        let spill = Spill::new(spill_slot, size_slot);
+        self.spill_map.insert(vreg, spill);
+        spill
+      }
     };
 
-    self.intervals.set_spill(id, spill_slot);
+    self.intervals.set_spill(id, spill);
+  }
+
+  fn prepare_for_spill_recycling(&mut self, id: IntId) {
+    let int = self.intervals.get(id);
+    debug_assert!(int.location.spill_slot().is_some());
+    if int.child.is_none() {
+      let spill = int.location.unwrap_spill();
+      debug_assert!(!self
+        .spill_pool
+        .iter()
+        .any(|&(_, other_spill)| spill == other_spill));
+      self.spill_pool.push((int.end, spill));
+    }
   }
 }
 
@@ -731,7 +788,7 @@ fn match_previous_update_state(
   let mut other_inactive = Vec::new();
   let mut other_expired = Vec::new();
   for &id in &prev_active {
-    if intervals.get(id).location.spill().is_some() {
+    if intervals.get(id).location.spill_slot().is_some() {
       continue;
     }
     if intervals.get(id).end < start_point {
@@ -744,7 +801,7 @@ fn match_previous_update_state(
     }
   }
   for &id in &prev_inactive {
-    if intervals.get(id).location.spill().is_some() {
+    if intervals.get(id).location.spill_slot().is_some() {
       continue;
     }
     if intervals.get(id).end < start_point {
@@ -883,6 +940,20 @@ fn update_state<'a, F: Function>(
       #[cfg(debug_assertions)]
       expired.push(int.id);
       reusable.interval_tree_deletes.push((int.id, last_frag_idx));
+
+      if int.child.is_none() && !int.is_fixed() {
+        let vreg = intervals.vreg(int.id);
+        if let Some(spill) = state.spill_map.remove(&vreg) {
+          debug_assert!(!state
+            .spill_pool
+            .iter()
+            .any(|(_, other_spill)| *other_spill == spill));
+          let end = intervals.get(int.parent.unwrap()).end;
+          debug!("spill {:?} is free after {:?} (vreg {:?})", spill, end, vreg);
+          state.spill_pool.push((end, spill));
+        }
+      }
+
       continue;
     }
 
@@ -1297,6 +1368,7 @@ fn allocate_blocked_reg<F: Function>(
     Some(u) => u,
     None => {
       state.spill(cur_id);
+      state.prepare_for_spill_recycling(cur_id);
       return Ok(());
     }
   };
@@ -1442,6 +1514,7 @@ fn allocate_blocked_reg<F: Function>(
     let new_int = split(state, cur_id, first_use);
     state.insert_unhandled(new_int);
     state.spill(cur_id);
+  // Cur just got split, so we can't recycle its spill point.
   } else {
     debug!("taking over register, spilling intersecting intervals");
 
@@ -1966,6 +2039,7 @@ fn split_and_spill<F: Function>(
     }
     None => {
       // Let it be spilled for the rest of its lifetime.
+      state.prepare_for_spill_recycling(child);
     }
   }
 
@@ -2289,21 +2363,32 @@ pub fn run<F: Function>(
         }
 
         {
+          let int = state.intervals.get(id);
           // Maintain active/inactive state for match_previous_update_state.
-          if state.intervals.get(id).location.reg().is_some() {
-            // Add the current interval to the interval tree, if it's been
-            // allocated.
-            let fragments = &state.fragments;
-            let intervals = &state.intervals;
-            state.interval_tree.insert(
-              (id, 0),
-              Some(&|left, right| {
-                cmp_interval_tree(left, right, intervals, fragments)
-              }),
-            );
+          match int.location {
+            Location::Reg(_) => {
+              // Add the current interval to the interval tree, if it's been
+              // allocated.
+              let fragments = &state.fragments;
+              let intervals = &state.intervals;
+              state.interval_tree.insert(
+                (id, 0),
+                Some(&|left, right| {
+                  cmp_interval_tree(left, right, intervals, fragments)
+                }),
+              );
 
-            #[cfg(debug_assertions)]
-            state.active.push(id);
+              #[cfg(debug_assertions)]
+              state.active.push(id);
+            }
+
+            Location::Stack(spill) => {
+              if int.child.is_none() {
+                state.spill_pool.push((int.end, spill));
+              }
+            }
+
+            _ => {}
           }
         }
       }
@@ -2460,7 +2545,7 @@ fn resolve_moves<F: Function>(
           // registers with at least one register use, so a parentless interval (=
           // hasn't ever been split) can't live in a stack slot.
           debug_assert!(
-            loc.spill().is_none()
+            loc.spill_slot().is_none()
               || (next_use(
                 mention_map,
                 intervals,
@@ -2544,7 +2629,7 @@ fn resolve_moves<F: Function>(
               "inblock fixup: {:?} reload {:?} -> {:?} at {:?}",
               int_id, spill, rreg, at_inst
             );
-            entry.push(MoveOp::new_reload(spill, rreg, vreg));
+            entry.push(MoveOp::new_reload(spill.slot, rreg, vreg));
           }
         }
       }
@@ -2570,7 +2655,7 @@ fn resolve_moves<F: Function>(
             );
             spills.entry(at_inst).or_insert(Vec::new()).push(
               InstToInsert::Spill {
-                to_slot: spill,
+                to_slot: spill.slot,
                 from_reg: rreg,
                 for_vreg: vreg,
               },
@@ -2708,30 +2793,30 @@ fn resolve_moves<F: Function>(
             pending_moves.0.push(MoveOp::new_move(cur_rreg, succ_rreg, vreg));
           }
 
-          (Location::Reg(cur_rreg), Location::Stack(spillslot)) => {
+          (Location::Reg(cur_rreg), Location::Stack(spill)) => {
             debug!(
               "boundary fixup: spill {:?} -> {:?} at {:?} for {:?} between {:?} and {:?}",
               cur_rreg,
-              spillslot,
+              spill,
               at_inst,
               vreg,
               block,
               succ
             );
-            pending_moves.0.push(MoveOp::new_spill(cur_rreg, spillslot, vreg));
+            pending_moves.0.push(MoveOp::new_spill(cur_rreg, spill.slot, vreg));
           }
 
-          (Location::Stack(spillslot), Location::Reg(rreg)) => {
+          (Location::Stack(spill), Location::Reg(rreg)) => {
             debug!(
               "boundary fixup: reload {:?} -> {:?} at {:?} for {:?} between {:?} and {:?}",
-              spillslot,
+              spill,
               rreg,
               at_inst,
               vreg,
               block,
               succ
             );
-            pending_moves.0.push(MoveOp::new_reload(spillslot, rreg, vreg));
+            pending_moves.0.push(MoveOp::new_reload(spill.slot, rreg, vreg));
           }
 
           (

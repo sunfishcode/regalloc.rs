@@ -617,3 +617,7 @@ fn lsra_analysis_fuzz2() {
 fn lsra_sort_fixed() {
   test_utils::check_lsra("lsra_sort_fixed", 5, 5);
 }
+#[test]
+fn lsra_spill_reuse() {
+  test_utils::check_lsra("lsra_spill_reuse", 5, 5);
+}
