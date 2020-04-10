@@ -341,7 +341,7 @@ reg == rN and rN != rM, or `add rN, [spillslot]` if reg == rM and rN
 != rM.
 
 Spill slots here are indices in a spill space with slots of an
-abstract size. THey are not concrete byte offsets. They are allocated
+abstract size. They are not concrete byte offsets. They are allocated
 by the register allocator as needed, according to the size needed for
 a given regclass (as indicated by `get_spillslot_size`) and part of
 the returned regalloc result type is an indication of how many slots
